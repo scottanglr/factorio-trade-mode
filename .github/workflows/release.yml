@@ -1,0 +1,46 @@
+name: Release Mod
+
+on:
+  pull_request:
+    types:
+      - closed
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out merged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          release_date="$(date -u +"%Y-%m-%dT%H-%M-%SZ")"
+          zip_name="factorio-trade-mode-${release_date}.zip"
+          tag_name="release-${release_date}"
+
+          echo "release_date=${release_date}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${zip_name}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release archive from src
+        shell: bash
+        run: |
+          cd src
+          zip -r "../${{ steps.meta.outputs.zip_name }}" .
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.zip_name }}
+          files: ${{ steps.meta.outputs.zip_name }}
+          generate_release_notes: true
