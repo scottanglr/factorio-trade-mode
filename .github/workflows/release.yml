@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Check out merged commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
@@ -38,7 +38,7 @@ jobs:
           zip -r "../${{ steps.meta.outputs.zip_name }}" .
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
           name: ${{ steps.meta.outputs.zip_name }}
