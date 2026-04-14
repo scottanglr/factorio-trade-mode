@@ -4,6 +4,8 @@ on:
   pull_request:
     types:
       - closed
+    paths:
+      - 'src/**'
 
 permissions:
   contents: write
@@ -38,7 +40,7 @@ jobs:
           zip -r "../${{ steps.meta.outputs.zip_name }}" .
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2.5.0
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
           name: ${{ steps.meta.outputs.zip_name }}
