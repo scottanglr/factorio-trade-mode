@@ -1,0 +1,26 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor settings
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+
+# Build and release artifacts
+/build/
+/dist/
+/release/
+/*.zip
+
+# Factorio/mod packaging helpers
+/__pycache__/
+*.pyc
