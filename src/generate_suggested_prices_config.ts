@@ -1,22 +1,15 @@
 #!/usr/bin/env node
 
-declare const process: {
-  argv: string[];
-  exit(code?: number): never;
-};
-declare function require(name: string): {
-  readFileSync(path: string, encoding: string): string;
-  writeFileSync(path: string, data: string, encoding: string): void;
-};
-const { readFileSync, writeFileSync } = require('fs');
+import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const MINED_RESOURCE_BASE_COST = 10;
 const PRODUCTION_FACTOR = 1.1;
 const DEFAULT_DATA_RAW_URL = 'https://gist.githubusercontent.com/Bilka2/6b8a6a9e4a4ec779573ad703d03c1ae7/raw';
-const REQUIRED_ITEMS = ['inserter', 'wooden-chest', 'steel-chest', 'solar-panel', 'satellite', 'crude-oil'];
+const REQUIRED_ITEMS = ['inserter', 'steel-chest', 'solar-panel', 'rocket-part', 'crude-oil'];
 const FULL_DUMP_MIN_RECIPES = 200;
 const FULL_DUMP_REQUIRED_PROTOTYPES = ['item', 'fluid', 'recipe', 'resource', 'technology'];
-const FULL_DUMP_REQUIRED_RECIPES = ['inserter', 'solar-panel', 'satellite', 'assembling-machine-1'];
+const FULL_DUMP_REQUIRED_RECIPES = ['inserter', 'solar-panel', 'rocket-part', 'assembling-machine-1'];
 
 type LuaArrayEntry = [string, number] | [string];
 type RawEntry = Record<string, unknown> | LuaArrayEntry;
@@ -289,11 +282,26 @@ async function loadDataRaw(options: CliOptions): Promise<DataRaw> {
     return JSON.parse(readFileSync(options.input, 'utf8')) as DataRaw;
   }
 
-  const response = await fetch(options.inputUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download ${options.inputUrl}: HTTP ${response.status}`);
+  try {
+    const response = await fetch(options.inputUrl);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return (await response.json()) as DataRaw;
+  } catch (fetchError) {
+    try {
+      const json = execFileSync(
+        'curl',
+        ['-L', '--fail', '--silent', '--show-error', options.inputUrl],
+        { encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 },
+      );
+      return JSON.parse(json) as DataRaw;
+    } catch (curlError) {
+      throw new Error(
+        `Failed to download ${options.inputUrl}. fetch error: ${String(fetchError)}. curl error: ${String(curlError)}`,
+      );
+    }
   }
-  return (await response.json()) as DataRaw;
 }
 
 async function main(): Promise<void> {
