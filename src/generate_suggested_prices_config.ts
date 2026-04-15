@@ -2,9 +2,12 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { parse as parseLua } from 'luaparse';
 
 const MINED_RESOURCE_BASE_COST = 10;
 const PRODUCTION_FACTOR = 1.1;
+const MACHINE_TIME_COST_FACTOR = 1;
+const FACTORIO_DEFAULT_RECIPE_CRAFTING_TIME_SECONDS = 0.5;
 const DEFAULT_DATA_RAW_URL = 'https://gist.githubusercontent.com/Bilka2/6b8a6a9e4a4ec779573ad703d03c1ae7/raw';
 const REQUIRED_ITEMS = ['inserter', 'steel-chest', 'solar-panel', 'rocket-part', 'crude-oil'];
 const FULL_DUMP_MIN_RECIPES = 200;
@@ -56,9 +59,177 @@ function printHelp(): void {
 
 Options:
   --input <path>      Path to Factorio script-output/data-raw-dump.json
-  --input-url <url>   Fallback URL for full data.raw serialization
+  --input-url <url>   URL to full data.raw dump (JSON or Lua/Serpent)
   --output <path>     Output Lua config path (default: src/suggested-prices-config.lua)
   -h, --help          Show this help message`);
+}
+
+type LuaAstNode = {
+  type: string;
+  [key: string]: unknown;
+};
+
+function decodeLuaStringLiteral(raw: string): string {
+  const quote = raw[0];
+  const body = raw.slice(1, -1);
+  let out = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+
+    i += 1;
+    if (i >= body.length) {
+      break;
+    }
+    const esc = body[i];
+    switch (esc) {
+      case 'a':
+        out += '\u0007';
+        break;
+      case 'b':
+        out += '\b';
+        break;
+      case 'f':
+        out += '\f';
+        break;
+      case 'n':
+        out += '\n';
+        break;
+      case 'r':
+        out += '\r';
+        break;
+      case 't':
+        out += '\t';
+        break;
+      case 'v':
+        out += '\u000b';
+        break;
+      case '\\':
+      case '"':
+      case "'":
+        out += esc;
+        break;
+      case 'z':
+        while (i + 1 < body.length && /\s/.test(body[i + 1])) {
+          i += 1;
+        }
+        break;
+      case 'x': {
+        const hex = body.slice(i + 1, i + 3);
+        if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 2;
+        } else {
+          out += 'x';
+        }
+        break;
+      }
+      default:
+        if (/[0-9]/.test(esc)) {
+          let digits = esc;
+          while (i + 1 < body.length && digits.length < 3 && /[0-9]/.test(body[i + 1])) {
+            i += 1;
+            digits += body[i];
+          }
+          out += String.fromCharCode(parseInt(digits, 10));
+          break;
+        }
+        out += esc;
+    }
+  }
+  if (quote !== '"' && quote !== "'") {
+    throw new Error(`Unsupported Lua string delimiter: ${quote}`);
+  }
+  return out;
+}
+
+function parseLuaDumpPayload(payload: string): unknown {
+  const trimmed = payload.trimStart();
+  const body = trimmed.startsWith('Script @__DataRawSerpent__/') ? trimmed.replace(/^[^{]*:\s*/, '') : trimmed;
+  const ast = parseLua(`return ${body}`, {
+    comments: false,
+    scope: false,
+    locations: false,
+    ranges: false,
+  }) as unknown as LuaAstNode;
+  const chunkBody = ast.body as LuaAstNode[];
+  const returnNode = chunkBody[0];
+  if (!returnNode || returnNode.type !== 'ReturnStatement') {
+    throw new Error('Lua dump did not parse into a return statement.');
+  }
+  const args = returnNode.arguments as LuaAstNode[];
+  if (!args || args.length !== 1) {
+    throw new Error('Lua dump must return exactly one top-level table.');
+  }
+  return luaNodeToJs(args[0]);
+}
+
+function luaNodeToJs(node: LuaAstNode): unknown {
+  switch (node.type) {
+    case 'TableConstructorExpression': {
+      const fields = node.fields as LuaAstNode[];
+      const keyed: Record<string, unknown> = {};
+      const arrayValues: unknown[] = [];
+      for (const field of fields) {
+        if (field.type === 'TableValue') {
+          arrayValues.push(luaNodeToJs(field.value as LuaAstNode));
+          continue;
+        }
+        if (field.type === 'TableKeyString') {
+          const key = ((field.key as LuaAstNode).name as string) ?? '';
+          keyed[key] = luaNodeToJs(field.value as LuaAstNode);
+          continue;
+        }
+        if (field.type === 'TableKey') {
+          const key = luaNodeToJs(field.key as LuaAstNode);
+          keyed[String(key)] = luaNodeToJs(field.value as LuaAstNode);
+          continue;
+        }
+        throw new Error(`Unsupported Lua table field type: ${field.type}`);
+      }
+      if (Object.keys(keyed).length === 0) {
+        return arrayValues;
+      }
+      for (let i = 0; i < arrayValues.length; i += 1) {
+        keyed[String(i + 1)] = arrayValues[i];
+      }
+      return keyed;
+    }
+    case 'StringLiteral': {
+      if (typeof node.value === 'string') {
+        return node.value;
+      }
+      const raw = node.raw;
+      if (typeof raw !== 'string' || raw.length < 2) {
+        throw new Error('Unsupported Lua string literal.');
+      }
+      return decodeLuaStringLiteral(raw);
+    }
+    case 'NumericLiteral':
+      return typeof node.value === 'number' ? node.value : Number(node.raw);
+    case 'BooleanLiteral':
+      return typeof node.value === 'boolean' ? node.value : node.raw === 'true';
+    case 'NilLiteral':
+      return null;
+    case 'UnaryExpression':
+      if (node.operator === '-' && (node.argument as LuaAstNode).type === 'NumericLiteral') {
+        return -((node.argument as LuaAstNode).value as number);
+      }
+      throw new Error(`Unsupported unary expression in Lua dump: ${String(node.operator)}`);
+    default:
+      throw new Error(`Unsupported Lua AST node type: ${node.type}`);
+  }
+}
+
+function parseDataRaw(payload: string): DataRaw {
+  try {
+    return JSON.parse(payload) as DataRaw;
+  } catch {
+    return parseLuaDumpPayload(payload) as DataRaw;
+  }
 }
 
 function entryName(entry: RawEntry): string | undefined {
@@ -181,6 +352,12 @@ function addPumpSeedCosts(raw: DataRaw, prices: PriceMap): void {
   }
 }
 
+function extractRecipeCraftingTimeSeconds(recipe: Record<string, unknown>): number {
+  // Factorio recipe prototypes store crafting time in `energy_required`.
+  // When omitted, Factorio defaults this to 0.5 seconds.
+  return typeof recipe.energy_required === 'number' ? recipe.energy_required : FACTORIO_DEFAULT_RECIPE_CRAFTING_TIME_SECONDS;
+}
+
 function calculatePrices(raw: DataRaw): PriceMap {
   const prices: PriceMap = {};
 
@@ -212,13 +389,16 @@ function calculatePrices(raw: DataRaw): PriceMap {
         }
 
         const totalInputCost = ingredients.reduce((total, [name, amount]) => total + prices[name] * amount, 0);
+        const recipeCraftingTimeSeconds = extractRecipeCraftingTimeSeconds(variant);
+        const totalCostWithTime =
+          totalInputCost * PRODUCTION_FACTOR + recipeCraftingTimeSeconds * MACHINE_TIME_COST_FACTOR;
 
         for (const [productName, productAmount] of products) {
           if (productAmount <= 0) {
             continue;
           }
 
-          const candidate = (totalInputCost * PRODUCTION_FACTOR) / productAmount;
+          const candidate = totalCostWithTime / productAmount;
           if (prices[productName] === undefined || candidate < prices[productName]) {
             prices[productName] = candidate;
             changed = true;
@@ -266,6 +446,7 @@ function writeLuaConfig(prices: PriceMap, outputPath: string): void {
     '-- Auto-generated by src/generate_suggested_prices_config.ts',
     `-- mined resource base cost = ${MINED_RESOURCE_BASE_COST}`,
     `-- production factor = ${PRODUCTION_FACTOR}`,
+    `-- machine time cost factor = ${MACHINE_TIME_COST_FACTOR}`,
     'return {',
   ];
 
@@ -279,29 +460,15 @@ function writeLuaConfig(prices: PriceMap, outputPath: string): void {
 
 async function loadDataRaw(options: CliOptions): Promise<DataRaw> {
   if (options.input) {
-    return JSON.parse(readFileSync(options.input, 'utf8')) as DataRaw;
+    return parseDataRaw(readFileSync(options.input, 'utf8'));
   }
 
-  try {
-    const response = await fetch(options.inputUrl);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return (await response.json()) as DataRaw;
-  } catch (fetchError) {
-    try {
-      const json = execFileSync(
-        'curl',
-        ['-L', '--fail', '--silent', '--show-error', options.inputUrl],
-        { encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 },
-      );
-      return JSON.parse(json) as DataRaw;
-    } catch (curlError) {
-      throw new Error(
-        `Failed to download ${options.inputUrl}. fetch error: ${String(fetchError)}. curl error: ${String(curlError)}`,
-      );
-    }
-  }
+  const payload = execFileSync(
+    'curl',
+    ['-L', '--fail', '--silent', '--show-error', options.inputUrl],
+    { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+  );
+  return parseDataRaw(payload);
 }
 
 async function main(): Promise<void> {
