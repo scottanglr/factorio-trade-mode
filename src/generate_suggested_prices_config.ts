@@ -7,7 +7,7 @@ import { parse as parseLua } from 'luaparse';
 const MINED_RESOURCE_BASE_COST = 10;
 const PRODUCTION_FACTOR = 1.1;
 const MACHINE_TIME_COST_FACTOR = 1;
-const FACTORIO_DEFAULT_RECIPE_CRAFTING_TIME_SECONDS = 0.5;
+const FACTORIO_IMPLICIT_RECIPE_CRAFTING_TIME_SECONDS = 0.5;
 const DEFAULT_DATA_RAW_URL = 'https://gist.githubusercontent.com/Bilka2/6b8a6a9e4a4ec779573ad703d03c1ae7/raw';
 const REQUIRED_ITEMS = ['inserter', 'steel-chest', 'solar-panel', 'rocket-part', 'crude-oil'];
 const FULL_DUMP_MIN_RECIPES = 200;
@@ -24,6 +24,12 @@ type DataRaw = {
 
 type PriceMap = Record<string, number>;
 type NameAmount = [string, number];
+type CraftingTimeSummary = {
+  implicitDefaultCount: number;
+  explicitDefaultCount: number;
+  explicitNonDefaultCount: number;
+  explicitNonDefaultExamples: Array<{ name: string; seconds: number }>;
+};
 
 type CliOptions = {
   input?: string;
@@ -68,6 +74,43 @@ type LuaAstNode = {
   type: string;
   [key: string]: unknown;
 };
+
+function parseLuaChunk(source: string): LuaAstNode | undefined {
+  try {
+    return parseLua(source, {
+      comments: false,
+      scope: false,
+      locations: false,
+      ranges: false,
+    }) as unknown as LuaAstNode;
+  } catch {
+    return undefined;
+  }
+}
+
+function findSingleReturnedLuaValue(statements: LuaAstNode[]): LuaAstNode | undefined {
+  for (const statement of statements) {
+    if (statement.type === 'ReturnStatement') {
+      const args = statement.arguments as LuaAstNode[];
+      if (!args || args.length !== 1) {
+        throw new Error('Lua dump must return exactly one top-level value.');
+      }
+      return args[0];
+    }
+
+    if (statement.type === 'DoStatement') {
+      const body = statement.body;
+      if (Array.isArray(body)) {
+        const value = findSingleReturnedLuaValue(body as LuaAstNode[]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
 
 function decodeLuaStringLiteral(raw: string): string {
   const quote = raw[0];
@@ -148,23 +191,19 @@ function decodeLuaStringLiteral(raw: string): string {
 
 function parseLuaDumpPayload(payload: string): unknown {
   const trimmed = payload.trimStart();
-  const body = trimmed.startsWith('Script @__DataRawSerpent__/') ? trimmed.replace(/^[^{]*:\s*/, '') : trimmed;
-  const ast = parseLua(`return ${body}`, {
-    comments: false,
-    scope: false,
-    locations: false,
-    ranges: false,
-  }) as unknown as LuaAstNode;
+  const body = trimmed.startsWith('Script @__DataRawSerpent__/')
+    ? trimmed.replace(/^Script @__DataRawSerpent__\/.*?:\s*/, '')
+    : trimmed;
+  const ast = parseLuaChunk(body) ?? parseLuaChunk(`return ${body}`);
+  if (!ast) {
+    throw new Error('Lua dump could not be parsed as a Lua chunk or table expression.');
+  }
   const chunkBody = ast.body as LuaAstNode[];
-  const returnNode = chunkBody[0];
-  if (!returnNode || returnNode.type !== 'ReturnStatement') {
-    throw new Error('Lua dump did not parse into a return statement.');
+  const returnedValue = findSingleReturnedLuaValue(chunkBody);
+  if (!returnedValue) {
+    throw new Error('Lua dump did not contain a return value.');
   }
-  const args = returnNode.arguments as LuaAstNode[];
-  if (!args || args.length !== 1) {
-    throw new Error('Lua dump must return exactly one top-level table.');
-  }
-  return luaNodeToJs(args[0]);
+  return luaNodeToJs(returnedValue);
 }
 
 function luaNodeToJs(node: LuaAstNode): unknown {
@@ -354,8 +393,40 @@ function addPumpSeedCosts(raw: DataRaw, prices: PriceMap): void {
 
 function extractRecipeCraftingTimeSeconds(recipe: Record<string, unknown>): number {
   // Factorio recipe prototypes store crafting time in `energy_required`.
-  // When omitted, Factorio defaults this to 0.5 seconds.
-  return typeof recipe.energy_required === 'number' ? recipe.energy_required : FACTORIO_DEFAULT_RECIPE_CRAFTING_TIME_SECONDS;
+  // When omitted in data.raw, Factorio's actual implicit recipe time is 0.5 seconds.
+  return typeof recipe.energy_required === 'number' ? recipe.energy_required : FACTORIO_IMPLICIT_RECIPE_CRAFTING_TIME_SECONDS;
+}
+
+function summarizeCraftingTimes(raw: DataRaw): CraftingTimeSummary {
+  const summary: CraftingTimeSummary = {
+    implicitDefaultCount: 0,
+    explicitDefaultCount: 0,
+    explicitNonDefaultCount: 0,
+    explicitNonDefaultExamples: [],
+  };
+  const recipes = raw.recipe ?? {};
+  for (const recipe of Object.values(recipes)) {
+    if (recipe.hidden === true) {
+      continue;
+    }
+    for (const variant of recipeVariants(recipe)) {
+      const name = typeof variant.name === 'string' ? variant.name : '(unknown)';
+      const energyRequired = variant.energy_required;
+      if (typeof energyRequired !== 'number') {
+        summary.implicitDefaultCount += 1;
+        continue;
+      }
+      if (energyRequired === FACTORIO_IMPLICIT_RECIPE_CRAFTING_TIME_SECONDS) {
+        summary.explicitDefaultCount += 1;
+        continue;
+      }
+      summary.explicitNonDefaultCount += 1;
+      if (summary.explicitNonDefaultExamples.length < 10) {
+        summary.explicitNonDefaultExamples.push({ name, seconds: energyRequired });
+      }
+    }
+  }
+  return summary;
 }
 
 function calculatePrices(raw: DataRaw): PriceMap {
@@ -367,6 +438,19 @@ function calculatePrices(raw: DataRaw): PriceMap {
   addPumpSeedCosts(raw, prices);
 
   const recipes = raw.recipe ?? {};
+  const productsWithDirectBaseRecipe = new Set<string>();
+  for (const recipe of Object.values(recipes)) {
+    for (const variant of recipeVariants(recipe)) {
+      if (typeof variant.name !== 'string') {
+        continue;
+      }
+      for (const [productName] of extractProducts(variant)) {
+        if (productName === variant.name) {
+          productsWithDirectBaseRecipe.add(productName);
+        }
+      }
+    }
+  }
 
   let changed = true;
   for (let pass = 0; pass < 10000 && changed; pass += 1) {
@@ -392,9 +476,13 @@ function calculatePrices(raw: DataRaw): PriceMap {
         const recipeCraftingTimeSeconds = extractRecipeCraftingTimeSeconds(variant);
         const totalCostWithTime =
           totalInputCost * PRODUCTION_FACTOR + recipeCraftingTimeSeconds * MACHINE_TIME_COST_FACTOR;
+        const recipeName = typeof variant.name === 'string' ? variant.name : '';
 
         for (const [productName, productAmount] of products) {
           if (productAmount <= 0) {
+            continue;
+          }
+          if (productsWithDirectBaseRecipe.has(productName) && recipeName !== productName) {
             continue;
           }
 
@@ -458,23 +546,53 @@ function writeLuaConfig(prices: PriceMap, outputPath: string): void {
   writeFileSync(outputPath, `${lines.join('\n')}\n`, 'utf8');
 }
 
+async function downloadDataRaw(url: string): Promise<string> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.text();
+  } catch (fetchError) {
+    try {
+      return execFileSync(
+        'curl',
+        ['-L', '--fail', '--silent', '--show-error', url],
+        { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+      );
+    } catch (curlError) {
+      throw new Error(
+        `Failed to download ${url}. fetch error: ${String(fetchError)}. curl error: ${String(curlError)}`,
+      );
+    }
+  }
+}
+
 async function loadDataRaw(options: CliOptions): Promise<DataRaw> {
   if (options.input) {
     return parseDataRaw(readFileSync(options.input, 'utf8'));
   }
 
-  const payload = execFileSync(
-    'curl',
-    ['-L', '--fail', '--silent', '--show-error', options.inputUrl],
-    { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
-  );
-  return parseDataRaw(payload);
+  return parseDataRaw(await downloadDataRaw(options.inputUrl));
 }
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const raw = await loadDataRaw(options);
   validateFullDump(raw);
+  const craftingTimeSummary = summarizeCraftingTimes(raw);
+  console.log(
+    `[craft-time] implicit-default=${craftingTimeSummary.implicitDefaultCount} ` +
+      `explicit-default=${craftingTimeSummary.explicitDefaultCount} ` +
+      `explicit-non-default=${craftingTimeSummary.explicitNonDefaultCount}`,
+  );
+  if (craftingTimeSummary.explicitNonDefaultExamples.length > 0) {
+    console.log(
+      `[craft-time] explicit-non-default examples: ${craftingTimeSummary.explicitNonDefaultExamples
+        .map((entry) => `${entry.name}=${entry.seconds}s`)
+        .join(', ')}`,
+    );
+  }
   const prices = calculatePrices(raw);
   const missingRequiredItems = REQUIRED_ITEMS.filter((name) => prices[name] === undefined);
   if (missingRequiredItems.length > 0) {
