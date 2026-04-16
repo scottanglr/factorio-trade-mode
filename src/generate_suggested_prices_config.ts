@@ -75,6 +75,43 @@ type LuaAstNode = {
   [key: string]: unknown;
 };
 
+function parseLuaChunk(source: string): LuaAstNode | undefined {
+  try {
+    return parseLua(source, {
+      comments: false,
+      scope: false,
+      locations: false,
+      ranges: false,
+    }) as unknown as LuaAstNode;
+  } catch {
+    return undefined;
+  }
+}
+
+function findSingleReturnedLuaValue(statements: LuaAstNode[]): LuaAstNode | undefined {
+  for (const statement of statements) {
+    if (statement.type === 'ReturnStatement') {
+      const args = statement.arguments as LuaAstNode[];
+      if (!args || args.length !== 1) {
+        throw new Error('Lua dump must return exactly one top-level value.');
+      }
+      return args[0];
+    }
+
+    if (statement.type === 'DoStatement') {
+      const body = statement.body;
+      if (Array.isArray(body)) {
+        const value = findSingleReturnedLuaValue(body as LuaAstNode[]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function decodeLuaStringLiteral(raw: string): string {
   const quote = raw[0];
   const body = raw.slice(1, -1);
@@ -154,23 +191,19 @@ function decodeLuaStringLiteral(raw: string): string {
 
 function parseLuaDumpPayload(payload: string): unknown {
   const trimmed = payload.trimStart();
-  const body = trimmed.startsWith('Script @__DataRawSerpent__/') ? trimmed.replace(/^[^{]*:\s*/, '') : trimmed;
-  const ast = parseLua(`return ${body}`, {
-    comments: false,
-    scope: false,
-    locations: false,
-    ranges: false,
-  }) as unknown as LuaAstNode;
+  const body = trimmed.startsWith('Script @__DataRawSerpent__/')
+    ? trimmed.replace(/^Script @__DataRawSerpent__\/.*?:\s*/, '')
+    : trimmed;
+  const ast = parseLuaChunk(body) ?? parseLuaChunk(`return ${body}`);
+  if (!ast) {
+    throw new Error('Lua dump could not be parsed as a Lua chunk or table expression.');
+  }
   const chunkBody = ast.body as LuaAstNode[];
-  const returnNode = chunkBody[0];
-  if (!returnNode || returnNode.type !== 'ReturnStatement') {
-    throw new Error('Lua dump did not parse into a return statement.');
+  const returnedValue = findSingleReturnedLuaValue(chunkBody);
+  if (!returnedValue) {
+    throw new Error('Lua dump did not contain a return value.');
   }
-  const args = returnNode.arguments as LuaAstNode[];
-  if (!args || args.length !== 1) {
-    throw new Error('Lua dump must return exactly one top-level table.');
-  }
-  return luaNodeToJs(args[0]);
+  return luaNodeToJs(returnedValue);
 }
 
 function luaNodeToJs(node: LuaAstNode): unknown {
@@ -513,17 +546,34 @@ function writeLuaConfig(prices: PriceMap, outputPath: string): void {
   writeFileSync(outputPath, `${lines.join('\n')}\n`, 'utf8');
 }
 
+async function downloadDataRaw(url: string): Promise<string> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.text();
+  } catch (fetchError) {
+    try {
+      return execFileSync(
+        'curl',
+        ['-L', '--fail', '--silent', '--show-error', url],
+        { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+      );
+    } catch (curlError) {
+      throw new Error(
+        `Failed to download ${url}. fetch error: ${String(fetchError)}. curl error: ${String(curlError)}`,
+      );
+    }
+  }
+}
+
 async function loadDataRaw(options: CliOptions): Promise<DataRaw> {
   if (options.input) {
     return parseDataRaw(readFileSync(options.input, 'utf8'));
   }
 
-  const payload = execFileSync(
-    'curl',
-    ['-L', '--fail', '--silent', '--show-error', options.inputUrl],
-    { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
-  );
-  return parseDataRaw(payload);
+  return parseDataRaw(await downloadDataRaw(options.inputUrl));
 }
 
 async function main(): Promise<void> {
