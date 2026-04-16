@@ -24,3 +24,4 @@ desktop.ini
 # Factorio/mod packaging helpers
 /__pycache__/
 *.pyc
+/factorio-game/
