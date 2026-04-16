@@ -9,8 +9,6 @@ permissions:
 jobs:
   regenerate:
     runs-on: ubuntu-latest
-    env:
-      DATA_RAW_URL: https://gist.githubusercontent.com/Bilka2/6b8a6a9e4a4ec779573ad703d03c1ae7/raw
 
     steps:
       - name: Checkout
@@ -28,7 +26,7 @@ jobs:
         run: npm install
 
       - name: Regenerate suggested prices config
-        run: npx tsx src/generate_suggested_prices_config.ts --input-url "$DATA_RAW_URL" --output src/suggested-prices-config.lua
+        run: npx tsx src/generate_suggested_prices_config.ts --output src/suggested-prices-config.lua
 
       - name: Commit updated config
         shell: bash
