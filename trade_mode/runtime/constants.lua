@@ -10,11 +10,16 @@ local constants = {
 
   gui = {
     screen_root = "trade_mode_screen_root",
+    main_tabs = "trade_mode_main_tabs",
     market_filter = "trade_mode_market_filter",
     market_online_only = "trade_mode_market_online_only",
+    market_results = "trade_mode_market_results",
+    market_orders_table = "trade_mode_market_orders_table",
     contract_title = "trade_mode_contract_title",
     contract_description = "trade_mode_contract_description",
     contract_amount = "trade_mode_contract_amount",
+    contract_list = "trade_mode_contract_list",
+    contract_count = "trade_mode_contract_count",
     contract_list_prefix = "trade_mode_contract_select_",
     buy_order_item = "trade_mode_buy_order_item",
     buy_order_price = "trade_mode_buy_order_price",
@@ -56,4 +61,3 @@ local constants = {
 }
 
 return constants
-
