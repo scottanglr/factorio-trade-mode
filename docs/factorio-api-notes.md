@@ -27,7 +27,8 @@ This document captures the official API/runtime references used for every Factor
 ### Box/inserter/entity integration
 
 - `on_built_entity` / `on_robot_built_entity` are used to register trade boxes and nearby inserters.
-- `on_pre_player_mined_item`, `on_player_mined_entity`, `on_robot_pre_mined`, and `on_robot_mined_entity` are used to tear down tracked entities cleanly.
+- `on_space_platform_built_entity` and `script_raised_revive` are also relevant in 2.0 because entities can be built by platforms or revived by other mods, not only by players and robots.
+- `on_pre_player_mined_item`, `on_robot_pre_mined`, `on_space_platform_pre_mined`, and `script_raised_destroy` are used to tear down tracked entities cleanly across player, robot, platform, and scripted destruction paths.
 - `LuaBootstrap::on_event(..., filters)` and `LuaBootstrap::set_event_filter()` support `name`/`type` event filters for built/mined/died entity events, so the runtime can subscribe only to `trade-box` and `inserter` entity changes instead of every entity event.
 - `LuaEntity::get_inventory()` is used to access chest inventories.
 - `LuaEntity::unit_number` is used as the stable save-lifetime identifier for tracked trade boxes and inserters.
@@ -50,6 +51,12 @@ Factorio does not expose a single pre-insert chest event that gives both exact q
 - `LuaGuiElement::add()` supports the controls used in this mod, including frames, flows, tables, textfields, scroll-panes, tabbed panes, buttons, and choose-element buttons.
 - `ShortcutPrototype` with `action = "lua"` raises `on_lua_shortcut`, which is used to open the global market/contracts/economy window.
 - `LuaPlayer::opened` and `on_gui_opened` are used to show the trade-box configuration panel when a player interacts with a trade box.
+- `on_runtime_mod_setting_changed` is the documented hook for reacting immediately when the runtime-global chart-tag setting is toggled.
+
+### Map tags
+
+- `LuaForce::add_chart_tag()` only creates a valid tag if the chunk is already charted for that force.
+- `on_chunk_charted` is therefore needed to retry trade-box tag creation when a force charts the box location after the order already exists.
 
 ### Economy sampling and admin reporting
 

@@ -5,7 +5,7 @@ local lib = require("tests.test_lib")
 local metrics = require("trade_mode.core.metrics")
 local orders = require("trade_mode.core.orders")
 local pricing = require("trade_mode.core.pricing")
-local suggested_prices = require("src.suggested-prices-config")
+local suggested_prices = require("trade_mode.suggested-prices-config")
 local ubi = require("trade_mode.core.ubi")
 
 local suite = {}
@@ -48,6 +48,40 @@ function suite.run()
         local value, err = pricing.get_suggested_price(suggested_prices, "definitely-not-real")
         lib.assert_nil(value)
         lib.assert_equal(err, "unknown_item")
+      end,
+    },
+    {
+      name = "invalid unit price is rejected when creating an order",
+      run = function()
+        local ok = pcall(function()
+          orders.create_order({}, {
+            box_id = "box-1",
+            buyer_id = 2,
+            item_name = "iron-ore",
+            unit_price = 0,
+            tick = 1,
+          })
+        end)
+        lib.assert_false(ok)
+      end,
+    },
+    {
+      name = "invalid unit price is rejected when updating an order",
+      run = function()
+        local order_state = {}
+        local created = orders.create_order(order_state, {
+          box_id = "box-1",
+          buyer_id = 2,
+          item_name = "iron-ore",
+          unit_price = 7,
+          tick = 1,
+        })
+        local ok = pcall(function()
+          orders.update_order(order_state, created.order.id, {
+            unit_price = 0,
+          })
+        end)
+        lib.assert_false(ok)
       end,
     },
     {

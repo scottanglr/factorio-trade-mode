@@ -497,6 +497,54 @@ local function run_ubi_scaling_case()
   )
 end
 
+local function contains_value(values, target)
+  for _, value in ipairs(values) do
+    if value == target then
+      return true
+    end
+  end
+  return false
+end
+
+local function run_script_destroy_cleanup_case()
+  clear_area({{46, -4}, {54, 4}})
+
+  local box = create_trade_box({50, 0})
+  local box_id = util.id_key(box.unit_number)
+  local created = remote_call("create_order", box.unit_number, 2, "iron-ore", 10)
+  local before = snapshot()
+
+  box.destroy({raise_destroy = true})
+
+  local after = snapshot()
+  local remaining_order = nil
+  for _, row in ipairs(after.orders) do
+    if row.box_id == box_id then
+      remaining_order = row
+      break
+    end
+  end
+
+  add_result(
+    "Scenario H: Script-raised destroy cleans up tracked trade boxes immediately",
+    contains_value(before.tracked_trade_boxes, box_id)
+      and not contains_value(after.tracked_trade_boxes, box_id)
+      and remaining_order == nil,
+    "Destroying a tracked trade box with raise_destroy removes it from runtime tracking and cancels its active order immediately.",
+    {
+      "Create a tracked trade box and attach an active order.",
+      "Destroy the entity with raise_destroy enabled so script_raised_destroy fires.",
+      "Verify the trade box disappears from runtime tracking and the order no longer appears in the active snapshot immediately.",
+    },
+    {
+      created_ok = created.ok,
+      before_tracked_trade_boxes = before.tracked_trade_boxes,
+      after_tracked_trade_boxes = after.tracked_trade_boxes,
+      remaining_order_status = remaining_order and remaining_order.status or "none",
+    }
+  )
+end
+
 local function write_report()
   local test_state = ensure_state()
   local pure = test_state.pure_result
@@ -542,6 +590,7 @@ script.on_event(defines.events.on_tick, function(event)
     setup_automated_trade_case("scenario_c", 24, 21, 0, 1)
     setup_automated_overflow_case()
     run_ubi_scaling_case()
+    run_script_destroy_cleanup_case()
   end
 
   check_automated_trade_case()

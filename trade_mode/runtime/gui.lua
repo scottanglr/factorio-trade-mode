@@ -13,7 +13,7 @@ local runtime_state = require("trade_mode.runtime.state")
 local util = require("trade_mode.core.util")
 local trade = require("trade_mode.runtime.trade")
 
-local suggested_prices = require("src.suggested-prices-config")
+local suggested_prices = require("trade_mode.suggested-prices-config")
 
 local gui = {}
 

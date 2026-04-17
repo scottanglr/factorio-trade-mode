@@ -47,3 +47,13 @@
   - Feed it a second rolling sample window representing 600 ore/min.
 - Binary pass condition:
   - The high-throughput case yields both a higher ore/minute reading and a higher `gold_per_second` result.
+
+## Scenario H
+
+- Name: Script-raised destroy cleans up tracked trade boxes immediately
+- Setup:
+  - Create a tracked trade box and attach an active order.
+  - Destroy the entity with `raise_destroy = true`.
+  - Read the remote state snapshot immediately afterward.
+- Binary pass condition:
+  - The destroyed box is gone from `tracked_trade_boxes` and its order is gone from the active-order snapshot in the same scripted step.

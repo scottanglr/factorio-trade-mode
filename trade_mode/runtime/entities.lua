@@ -68,6 +68,32 @@ local function box_inventory(entity)
   return entity.get_inventory(defines.inventory.chest)
 end
 
+local function position_in_area(position, area)
+  if not area then
+    return true
+  end
+
+  local left_top = area.left_top or area[1]
+  local right_bottom = area.right_bottom or area[2]
+  if not left_top or not right_bottom then
+    return true
+  end
+
+  local left_x = left_top.x or left_top[1]
+  local left_y = left_top.y or left_top[2]
+  local right_x = right_bottom.x or right_bottom[1]
+  local right_y = right_bottom.y or right_bottom[2]
+  if left_x == nil or left_y == nil or right_x == nil or right_y == nil then
+    return true
+  end
+
+  local min_x = math.min(left_x, right_x)
+  local max_x = math.max(left_x, right_x)
+  local min_y = math.min(left_y, right_y)
+  local max_y = math.max(left_y, right_y)
+  return position.x >= min_x and position.x <= max_x and position.y >= min_y and position.y <= max_y
+end
+
 local function destroy_tags_for_box(box_id)
   local runtime = runtime_state.runtime()
   local tags = runtime.market_tags[box_id]
@@ -115,6 +141,21 @@ end
 function entities.refresh_all_tags()
   for box_id in pairs(runtime_state.runtime().trade_boxes) do
     entities.refresh_tags_for_box(box_id)
+  end
+end
+
+function entities.refresh_tags_in_area(surface_index, force_name, area)
+  for box_id, record in pairs(runtime_state.runtime().trade_boxes) do
+    local entity = record.entity
+    if
+      entity and
+      entity.valid and
+      entity.surface.index == surface_index and
+      entity.force.name == force_name and
+      position_in_area(entity.position, area)
+    then
+      entities.refresh_tags_for_box(box_id)
+    end
   end
 end
 

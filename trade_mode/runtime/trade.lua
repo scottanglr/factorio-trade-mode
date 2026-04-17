@@ -70,14 +70,19 @@ local function find_automated_source(box_record, order, tick)
   end
 
   local nearby = entities.find_nearby_inserter_records(box_record)
+  local owned = {}
   for _, inserter_record in ipairs(nearby) do
     if inserter_record.owner_player_index then
-      return {
-        kind = "inserter",
-        player_index = inserter_record.owner_player_index,
-        inserter_record = inserter_record,
-      }
+      owned[#owned + 1] = inserter_record
     end
+  end
+
+  if #owned == 1 then
+    return {
+      kind = "inserter",
+      player_index = owned[1].owner_player_index,
+      inserter_record = owned[1],
+    }
   end
 
   return nil

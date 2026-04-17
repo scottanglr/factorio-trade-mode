@@ -24,6 +24,14 @@ local function scan_existing_trade_boxes()
   end
 end
 
+local function scan_existing_inserters()
+  for _, surface in pairs(game.surfaces) do
+    for _, entity in pairs(surface.find_entities_filtered({type = "inserter"})) do
+      entities.register_inserter(entity)
+    end
+  end
+end
+
 local function initialize_players()
   for _, player in pairs(game.players) do
     runtime_state.track_player(player)
@@ -46,14 +54,31 @@ end
 
 local function handle_removed_entity(event)
   local entity = event.entity
-  if not entity or not entity.valid then
+  if not entity then
     return
   end
 
-  if entity.name == constants.entity_name then
+  local unit_number = nil
+  local unit_number_ok = pcall(function()
+    unit_number = entity.unit_number
+  end)
+  local entity_id = unit_number_ok and unit_number and util.id_key(unit_number) or nil
+  local runtime = runtime_state.runtime()
+
+  if entity_id and runtime.trade_boxes[entity_id] then
+    entities.unregister_trade_box(entity_id)
+    return
+  end
+
+  if entity_id and runtime.inserters[entity_id] then
+    runtime.inserters[entity_id] = nil
+    return
+  end
+
+  if entity.valid and entity.name == constants.entity_name then
     entities.unregister_trade_box(entity)
-  elseif entity.type == "inserter" and entity.unit_number then
-    runtime_state.runtime().inserters[util.id_key(entity.unit_number)] = nil
+  elseif entity.valid and entity.type == "inserter" and entity_id then
+    runtime.inserters[entity_id] = nil
   end
 end
 
@@ -111,6 +136,22 @@ local function handle_custom_input(event)
     return
   end
   gui.toggle_main(game.players[event.player_index])
+end
+
+local function handle_chunk_charted(event)
+  if not settings.global[constants.setting_enable_chart_tags].value then
+    return
+  end
+
+  entities.refresh_tags_in_area(event.surface_index, event.force.name, event.area)
+end
+
+local function handle_runtime_mod_setting_changed(event)
+  if event.setting ~= constants.setting_enable_chart_tags or event.setting_type ~= "runtime-global" then
+    return
+  end
+
+  entities.refresh_all_tags()
 end
 
 local tracked_entity_filters = {
@@ -193,8 +234,14 @@ local function add_remote_interface()
         tick = game.tick,
       })
       if created.ok then
-        entities.sync_box_filters(box_id)
-        entities.refresh_tags_for_box(box_id)
+        local record = runtime_state.runtime().trade_boxes[box_id]
+        local entity = record and record.entity
+        if entity and entity.valid then
+          entities.register_trade_box(entity)
+        else
+          entities.sync_box_filters(box_id)
+          entities.refresh_tags_for_box(box_id)
+        end
       end
       return created
     end,
@@ -288,6 +335,7 @@ function app.register()
     runtime_state.root()
     initialize_players()
     scan_existing_trade_boxes()
+    scan_existing_inserters()
     entities.refresh_all_tags()
   end)
 
@@ -295,6 +343,7 @@ function app.register()
     runtime_state.root()
     initialize_players()
     scan_existing_trade_boxes()
+    scan_existing_inserters()
     entities.refresh_all_tags()
   end)
 
@@ -303,10 +352,14 @@ function app.register()
   script.on_event(defines.events.on_player_changed_force, handle_player_changed_force)
   script.on_event(defines.events.on_built_entity, handle_built_entity, tracked_entity_filters)
   script.on_event(defines.events.on_robot_built_entity, handle_built_entity, tracked_entity_filters)
+  script.on_event(defines.events.on_space_platform_built_entity, handle_built_entity, tracked_entity_filters)
   script.on_event(defines.events.script_raised_built, handle_built_entity, tracked_entity_filters)
+  script.on_event(defines.events.script_raised_revive, handle_built_entity, tracked_entity_filters)
   script.on_event(defines.events.on_pre_player_mined_item, handle_removed_entity, tracked_entity_filters)
   script.on_event(defines.events.on_robot_pre_mined, handle_removed_entity, tracked_entity_filters)
+  script.on_event(defines.events.on_space_platform_pre_mined, handle_removed_entity, tracked_entity_filters)
   script.on_event(defines.events.on_entity_died, handle_removed_entity, tracked_entity_filters)
+  script.on_event(defines.events.script_raised_destroy, handle_removed_entity, tracked_entity_filters)
   script.on_event(defines.events.on_selected_entity_changed, handle_selected_entity_changed)
   script.on_event(defines.events.on_gui_opened, handle_gui_opened)
   script.on_event(defines.events.on_gui_closed, handle_gui_closed)
@@ -317,6 +370,8 @@ function app.register()
   script.on_event(defines.events.on_gui_elem_changed, gui.handle_elem_changed)
   script.on_event(defines.events.on_lua_shortcut, handle_shortcut)
   script.on_event(constants.custom_input_name, handle_custom_input)
+  script.on_event(defines.events.on_chunk_charted, handle_chunk_charted)
+  script.on_event(defines.events.on_runtime_mod_setting_changed, handle_runtime_mod_setting_changed)
   script.on_event(defines.events.on_player_dropped_item_into_entity, trade.handle_player_drop_into_entity)
   script.on_event(defines.events.on_player_fast_transferred, trade.handle_player_fast_transfer)
   script.on_event(defines.events.on_player_main_inventory_changed, function(event)

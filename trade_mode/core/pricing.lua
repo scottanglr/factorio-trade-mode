@@ -20,10 +20,7 @@ function pricing.get_suggested_price(config, item_name)
 end
 
 function pricing.validate_unit_price(unit_price)
-  if not util.is_positive_integer(unit_price) then
-    return false, "invalid_unit_price"
-  end
-
+  util.assert_positive_integer(unit_price, "unit_price")
   return true
 end
 
