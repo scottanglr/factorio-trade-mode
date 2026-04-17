@@ -2,7 +2,11 @@
   "name": "factorio-trade-mode",
   "private": true,
   "scripts": {
-    "generate:suggested-prices": "tsx src/generate_suggested_prices_config.ts"
+    "generate:suggested-prices": "tsx src/generate_suggested_prices_config.ts",
+    "build:mod": "node scripts/build-mod.mjs",
+    "test:lua": "node scripts/validate-lua.mjs",
+    "test:factorio": "node scripts/run-tests.mjs",
+    "test": "npm run test:lua && npm run test:factorio"
   },
   "dependencies": {
     "luaparse": "^0.3.1"

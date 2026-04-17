@@ -1,0 +1,14 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+Date: 2026-04-16
+  Major Features:
+    - Initial release of Factorio Trade Mode for Factorio 2.0.
+  Features:
+    - Added trade boxes with deterministic buy-order settlement for manual and inserter deliveries.
+    - Added contracts with assign, unassign, and creator-authorized payout flows.
+    - Added UBI-style money injection tied to recent raw ore throughput.
+    - Added admin observability commands for trade volume, UBI, orders, contracts, and inserter payouts.
+  Gui:
+    - Added trade-box configuration, global market, contracts, economy, and inserter payout panels.
+  Control:
+    - Added deterministic scenario coverage and headless npm-driven verification for the shipped economy flows.

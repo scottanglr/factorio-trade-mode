@@ -20,6 +20,8 @@ desktop.ini
 /dist/
 /release/
 /*.zip
+/node_modules/
+/.npm-cache/
 
 # Factorio/mod packaging helpers
 /__pycache__/
