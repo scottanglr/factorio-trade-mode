@@ -8,6 +8,13 @@ Trade-focused multiplayer economy for Factorio 2.0 with:
 - Admin observability commands for money flow, UBI, orders, and contracts
 - Inserter lifetime payout tracking with player-facing stats
 
+## Documentation
+
+- [Feature Guide](docs/guide/README.md)
+- [Architecture Notes](docs/architecture.md)
+- [Factorio API Notes](docs/factorio-api-notes.md)
+- [Test Scenarios](docs/test-scenarios.md)
+
 ## Commands
 
 - `/trade_status`
