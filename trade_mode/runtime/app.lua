@@ -137,6 +137,7 @@ local function add_remote_interface()
           unit_price = order.unit_price,
           status = order.status,
           total_traded = order.total_traded,
+          total_units_traded = order.total_units_traded,
         }
       end
 

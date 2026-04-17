@@ -2,6 +2,7 @@ local constants = require("trade_mode.runtime.constants")
 local contracts = require("trade_mode.core.contracts")
 local entities = require("trade_mode.runtime.entities")
 local inserter_stats = require("trade_mode.core.inserter_stats")
+local ledger = require("trade_mode.core.ledger")
 local metrics = require("trade_mode.core.metrics")
 local orders = require("trade_mode.core.orders")
 local runtime_state = require("trade_mode.runtime.state")
@@ -144,6 +145,18 @@ local function refund_to_inserter_source(box_record, item_name, quantity, insert
   })
 end
 
+local function refund_excess(box_record, source, item_name, quantity)
+  if quantity <= 0 then
+    return
+  end
+
+  if source.kind == "manual" then
+    refund_to_player(box_record, item_name, quantity, source.player_index)
+  else
+    refund_to_inserter_source(box_record, item_name, quantity, source.inserter_record)
+  end
+end
+
 local function reconcile_order_box(box_record, tick)
   if not box_record.entity.valid then
     entities.unregister_trade_box(box_record.box_id)
@@ -188,16 +201,22 @@ local function reconcile_order_box(box_record, tick)
   end
 
   if not runtime_state.player_in_force(source.player_index, box_record.entity.force.name) then
-    if source.kind == "manual" then
-      refund_to_player(box_record, order.item_name, delta, source.player_index)
-    else
-      refund_to_inserter_source(box_record, order.item_name, delta, source.inserter_record)
-    end
+    refund_excess(box_record, source, order.item_name, delta)
     box_record.tracked_item_count = inventory.get_item_count(order.item_name)
     return
   end
 
-  local result = orders.settle_insert(root.orders, root.ledger, order.id, source.player_index, delta, tick)
+  local affordable_quantity = math.floor(ledger.get_balance(root.ledger, order.buyer_id) / order.unit_price)
+  local settled_quantity = math.min(delta, affordable_quantity)
+  local overflow_quantity = delta - settled_quantity
+
+  if settled_quantity <= 0 then
+    refund_excess(box_record, source, order.item_name, delta)
+    box_record.tracked_item_count = inventory.get_item_count(order.item_name)
+    return
+  end
+
+  local result = orders.settle_insert(root.orders, root.ledger, order.id, source.player_index, settled_quantity, tick)
   if result.ok then
     local current_second = runtime_state.current_second(tick)
     metrics.record_trade(
@@ -224,12 +243,9 @@ local function reconcile_order_box(box_record, tick)
         box_record.box_id
       )
     end
+    refund_excess(box_record, source, order.item_name, overflow_quantity)
   else
-    if source.kind == "manual" then
-      refund_to_player(box_record, order.item_name, delta, source.player_index)
-    else
-      refund_to_inserter_source(box_record, order.item_name, delta, source.inserter_record)
-    end
+    refund_excess(box_record, source, order.item_name, delta)
   end
 
   box_record.tracked_item_count = inventory.get_item_count(order.item_name)

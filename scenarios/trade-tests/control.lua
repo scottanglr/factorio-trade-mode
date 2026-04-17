@@ -4,6 +4,7 @@ local util = require("__factorio-trade-mode__.trade_mode.core.util")
 local ubi = require("__factorio-trade-mode__.trade_mode.core.ubi")
 local report_log_prefix = "TRADE_MODE_TEST_REPORT "
 local synthetic_seller_id = 1
+local synthetic_inserter_overflow_seller_id = 3
 
 local function add_result(name, ok, pass_condition, setup_steps, details)
   storage.test_state.results[#storage.test_state.results + 1] = {
@@ -142,6 +143,59 @@ local function run_manual_trade_case()
   )
 end
 
+local function run_manual_overflow_case()
+  clear_area({{-5, 6}, {5, 16}})
+
+  local before = snapshot()
+  local seller_before_balance = before.balances[tostring(synthetic_seller_id)] or 0
+  remote_call("credit_player", 23, 30)
+
+  local box = create_trade_box({0, 10})
+  local box_id = util.id_key(box.unit_number)
+  local created = remote_call("create_order", box.unit_number, 23, "iron-ore", 10)
+
+  box.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = 5})
+  local manual_note = remote_call("test_note_manual_insertion", box.unit_number, synthetic_seller_id, "iron-ore", 5)
+  remote_call("reconcile_now")
+
+  local after = snapshot()
+  local seller_after_balance = after.balances[tostring(synthetic_seller_id)] or 0
+  local buyer_after = after.balances["23"] or 0
+  local box_count = box.get_inventory(defines.inventory.chest).get_item_count("iron-ore")
+  local live_order = nil
+  for _, row in ipairs(after.orders) do
+    if row.box_id == box_id then
+      live_order = row
+      break
+    end
+  end
+
+  add_result(
+    "Scenario F: Manual overflow only sells the affordable subset",
+    seller_after_balance - seller_before_balance == 30
+      and buyer_after == 0
+      and box_count == 3
+      and (live_order and live_order.total_traded == 30 and live_order.total_units_traded == 3 or false),
+    "Seller earns 30 gold, buyer 23 ends at 0, the trade box keeps 3 iron ore, and the order records only 3 sold units.",
+    {
+      "Credit buyer account 23 with 30 gold.",
+      "Create a trade box and buy order for 5 iron ore at 10 gold each.",
+      "Insert all 5 manually and reconcile once.",
+    },
+    {
+      seller_before_balance = seller_before_balance,
+      seller_after_balance = seller_after_balance,
+      buyer_after = buyer_after,
+      box_count = box_count,
+      created_ok = created.ok,
+      manual_note_ok = manual_note.ok,
+      order_found = live_order ~= nil,
+      order_total_traded = live_order and live_order.total_traded or 0,
+      order_total_units_traded = live_order and live_order.total_units_traded or 0,
+    }
+  )
+end
+
 local function setup_automated_trade_case(case_name, area_origin_x, buyer_id, buyer_credit, expected_box_count)
   clear_area({{area_origin_x - 4, -4}, {area_origin_x + 4, 4}})
 
@@ -232,10 +286,10 @@ local function check_automated_trade_case()
   local money_report = after.reports.trade_money_last_minute
   add_result(
     "Admin command reports reflect last-minute trade metrics",
-    string.find(status_report, "money_traded_last_minute: 80", 1, true) ~= nil and string.find(money_report, "value: 80", 1, true) ~= nil,
-    "trade_status and trade_money_last_minute both report 80 after the manual and automated trade scenarios.",
+    string.find(status_report, "money_traded_last_minute: 130", 1, true) ~= nil and string.find(money_report, "value: 130", 1, true) ~= nil,
+    "trade_status and trade_money_last_minute both report 130 after the manual, overflow, and automated trade scenarios.",
     {
-      "Run the manual and automated trade scenarios first.",
+      "Run the manual, overflow, and automated trade scenarios first.",
       "Read the same formatted report strings used by the slash commands.",
     },
     {
@@ -297,6 +351,90 @@ local function check_insufficient_funds_case()
   )
 
   ensure_state().checkpoints["scenario_c"] = nil
+end
+
+local function setup_automated_overflow_case()
+  clear_area({{36, -4}, {44, 4}})
+
+  local before = snapshot()
+  local seller_before = before.balances[tostring(synthetic_inserter_overflow_seller_id)] or 0
+  remote_call("credit_player", 24, 25)
+
+  local source = create_container("steel-chest", {36, 0})
+  local box = create_trade_box({38, 0})
+  local inserter, bind_result = create_burner_inserter({37, 0}, defines.direction.west, synthetic_inserter_overflow_seller_id)
+  source.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = 3})
+  local box_id = util.id_key(box.unit_number)
+  local created = remote_call("create_order", box.unit_number, 24, "iron-ore", 10)
+
+  ensure_state().checkpoints["scenario_g"] = {
+    seller_before = seller_before,
+    buyer_id = 24,
+    box = box,
+    box_id = box_id,
+    source = source,
+    inserter = inserter,
+    due_tick = game.tick + 240,
+    created_ok = created.ok,
+    owner_bind_ok = bind_result.ok,
+    owner_bind_error = bind_result.error,
+  }
+end
+
+local function check_automated_overflow_case()
+  local checkpoint = ensure_state().checkpoints["scenario_g"]
+  if not checkpoint or game.tick < checkpoint.due_tick then
+    return
+  end
+
+  local after = snapshot()
+  local seller_after = after.balances[tostring(synthetic_inserter_overflow_seller_id)] or 0
+  local buyer_after = after.balances[tostring(checkpoint.buyer_id)] or 0
+  local box_count = checkpoint.box.get_inventory(defines.inventory.chest).get_item_count("iron-ore")
+  local source_count = checkpoint.source.get_inventory(defines.inventory.chest).get_item_count("iron-ore")
+  local held_count = checkpoint.inserter.held_stack.valid_for_read and checkpoint.inserter.held_stack.count or 0
+  local inserter_stat = after.inserter_stats[util.id_key(checkpoint.inserter.unit_number)]
+  local payout = inserter_stat and inserter_stat.lifetime_payout or 0
+  local live_order = nil
+  for _, row in ipairs(after.orders) do
+    if row.box_id == checkpoint.box_id then
+      live_order = row
+      break
+    end
+  end
+
+  add_result(
+    "Scenario G: Inserter overflow leaves the unaffordable remainder unsold",
+    seller_after - checkpoint.seller_before == 20
+      and buyer_after == 5
+      and box_count == 2
+      and (source_count + held_count) == 1
+      and payout == 20
+      and (live_order and live_order.total_traded == 20 and live_order.total_units_traded == 2 or false),
+    "Seller earns 20 gold, buyer 24 ends at 5, the trade box keeps 2 iron ore, and 1 iron ore remains on the source side unsold.",
+    {
+      "Credit buyer account 24 with 25 gold.",
+      "Feed 3 iron ore into a trade box through a burner inserter at 10 gold each.",
+      "Let the automation settle only the affordable 2 ore.",
+    },
+    {
+      seller_before = checkpoint.seller_before,
+      seller_after = seller_after,
+      buyer_after = buyer_after,
+      box_count = box_count,
+      source_count = source_count,
+      held_count = held_count,
+      inserter_payout = payout,
+      created_ok = checkpoint.created_ok,
+      owner_bind_ok = checkpoint.owner_bind_ok,
+      owner_bind_error = checkpoint.owner_bind_error,
+      order_found = live_order ~= nil,
+      order_total_traded = live_order and live_order.total_traded or 0,
+      order_total_units_traded = live_order and live_order.total_units_traded or 0,
+    }
+  )
+
+  ensure_state().checkpoints["scenario_g"] = nil
 end
 
 local function run_contract_case()
@@ -399,15 +537,18 @@ script.on_event(defines.events.on_tick, function(event)
     test_state.started = true
     test_state.pure_result = pure_suite.run()
     run_manual_trade_case()
+    run_manual_overflow_case()
     setup_automated_trade_case("scenario_b", 10, 20, 100, 3)
     setup_automated_trade_case("scenario_c", 24, 21, 0, 1)
+    setup_automated_overflow_case()
     run_ubi_scaling_case()
   end
 
   check_automated_trade_case()
   check_insufficient_funds_case()
+  check_automated_overflow_case()
 
-   if test_state.started and not test_state.contract_case_done and not test_state.checkpoints["scenario_b"] and not test_state.checkpoints["scenario_c"] then
+   if test_state.started and not test_state.contract_case_done and not test_state.checkpoints["scenario_b"] and not test_state.checkpoints["scenario_c"] and not test_state.checkpoints["scenario_g"] then
     run_contract_case()
     test_state.contract_case_done = true
   end

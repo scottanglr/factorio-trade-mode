@@ -89,6 +89,26 @@ function suite.run()
       end,
     },
     {
+      name = "order settlement can settle an affordable subset deterministically",
+      run = function()
+        local ledger_state = {}
+        ledger.credit(ledger_state, 2, 25, "seed")
+        local order_state = {}
+        local created = orders.create_order(order_state, {
+          box_id = "box-1",
+          buyer_id = 2,
+          item_name = "iron-ore",
+          unit_price = 10,
+          tick = 1,
+        })
+        local result = orders.settle_insert(order_state, ledger_state, created.order.id, 1, 2, 2)
+        lib.assert_true(result.ok)
+        lib.assert_equal(ledger.get_balance(ledger_state, 2), 5)
+        lib.assert_equal(ledger.get_balance(ledger_state, 1), 20)
+        lib.assert_equal(created.order.total_units_traded, 2)
+      end,
+    },
+    {
       name = "zero quantity is rejected",
       run = function()
         local ledger_state = {}
