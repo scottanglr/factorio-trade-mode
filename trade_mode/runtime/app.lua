@@ -100,6 +100,13 @@ local function handle_shortcut(event)
   gui.toggle_main(game.players[event.player_index])
 end
 
+local function handle_custom_input(event)
+  if event.input_name ~= constants.custom_input_name then
+    return
+  end
+  gui.toggle_main(game.players[event.player_index])
+end
+
 local tracked_entity_filters = {
   {filter = "name", name = constants.entity_name},
   {filter = "type", type = "inserter"},
@@ -274,6 +281,7 @@ function app.register()
   script.on_event(defines.events.on_gui_text_changed, gui.handle_text_changed)
   script.on_event(defines.events.on_gui_elem_changed, gui.handle_elem_changed)
   script.on_event(defines.events.on_lua_shortcut, handle_shortcut)
+  script.on_event(constants.custom_input_name, handle_custom_input)
   script.on_event(defines.events.on_player_dropped_item_into_entity, trade.handle_player_drop_into_entity)
   script.on_event(defines.events.on_player_fast_transferred, trade.handle_player_fast_transfer)
   script.on_event(defines.events.on_player_main_inventory_changed, function(event)

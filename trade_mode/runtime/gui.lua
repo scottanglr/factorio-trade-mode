@@ -1,5 +1,6 @@
 local constants = require("trade_mode.runtime.constants")
 local contracts = require("trade_mode.core.contracts")
+local commands_runtime = require("trade_mode.runtime.commands")
 local economy = require("trade_mode.runtime.economy")
 local entities = require("trade_mode.runtime.entities")
 local format = require("trade_mode.runtime.format")
@@ -23,6 +24,11 @@ local TRADE_BOX_STORED = "trade_mode_stored_count_label"
 local TRADE_BOX_LAST_TRADE = "trade_mode_last_trade_label"
 local TRADE_BOX_TOTAL = "trade_mode_total_traded_label"
 local INSERTER_CONTENT = "trade_mode_inserter_content"
+local FEEDBACK_COLORS = {
+  error = {r = 1, g = 0.34, b = 0.34},
+  success = {r = 0.62, g = 0.95, b = 0.62},
+  info = {r = 0.82, g = 0.82, b = 0.82},
+}
 
 local function root()
   return runtime_state.root()
@@ -37,6 +43,8 @@ local function ui_state(player_index)
     contract_title = "",
     contract_description = "",
     contract_amount = "",
+    trade_box_feedback = nil,
+    contract_feedback = nil,
     selected_main_tab = 1,
   }
   return runtime.player_ui[player_index]
@@ -122,6 +130,47 @@ end
 
 local function main_element(player, name)
   return find_descendant(main_frame(player), name)
+end
+
+local function main_tab_count(player)
+  if player.admin then
+    return 4
+  end
+  return 3
+end
+
+local function set_main_shortcut_toggled(player, toggled)
+  if player and player.valid then
+    player.set_shortcut_toggled(constants.shortcut_name, toggled)
+  end
+end
+
+local function set_feedback(player, key, level, text)
+  local ui = ui_state(player.index)
+  if text == nil then
+    ui[key] = nil
+    return
+  end
+
+  ui[key] = {
+    level = level or "info",
+    text = text,
+  }
+end
+
+local function apply_feedback(element, feedback)
+  if not element or not element.valid then
+    return
+  end
+
+  if feedback and feedback.text ~= "" then
+    element.caption = feedback.text
+    element.visible = true
+    element.style.font_color = FEEDBACK_COLORS[feedback.level] or FEEDBACK_COLORS.info
+  else
+    element.caption = ""
+    element.visible = false
+  end
 end
 
 local function set_text_if_changed(element, text)
@@ -230,6 +279,9 @@ local function refresh_trade_box_panel(player)
   local total_label = find_descendant(frame, TRADE_BOX_TOTAL)
   local toggle_button = find_descendant(frame, constants.gui.buy_order_toggle)
   local delete_button = find_descendant(frame, constants.gui.buy_order_delete)
+  local feedback_label = find_descendant(frame, constants.gui.buy_order_feedback)
+
+  apply_feedback(feedback_label, ui_state(player.index).trade_box_feedback)
 
   if selected_item then
     local suggested = pricing.get_suggested_price(suggested_prices, selected_item)
@@ -382,9 +434,12 @@ local function refresh_contracts_tab(player)
   local state = root()
   local count_label = main_element(player, constants.gui.contract_count)
   local list_box = main_element(player, constants.gui.contract_list)
+  local feedback_label = main_element(player, constants.gui.contract_feedback)
   if not count_label or not list_box then
     return
   end
+
+  apply_feedback(feedback_label, ui.contract_feedback)
 
   local contract_rows = contracts.list_all(state.contracts)
   ui.contract_list_ids = {}
@@ -492,6 +547,67 @@ local function refresh_economy_tab(player)
   end
 end
 
+local function refresh_admin_tab(player)
+  if not player.admin then
+    return
+  end
+
+  local container = main_element(player, constants.gui.admin_tab)
+  if not container then
+    return
+  end
+
+  clear_children(container)
+
+  local notes_frame = container.add({type = "frame", style = "inside_shallow_frame_with_padding", direction = "vertical"})
+  notes_frame.style.horizontally_stretchable = true
+  local notes = notes_frame.add({type = "flow", direction = "vertical"})
+  notes.style.horizontally_stretchable = true
+  notes.style.vertical_spacing = 4
+  notes.add({type = "label", style = "heading_2_label", caption = "Admin diagnostics"})
+  notes.add({
+    type = "label",
+    style = "caption_label",
+    caption = "Chart-tag visibility is a force-wide Factorio surface, so it cannot be overridden per player.",
+  })
+  notes.add({
+    type = "label",
+    style = "caption_label",
+    caption = "Use the slash commands as quick admin access, or read the live reports below.",
+  })
+
+  local _, status_content = add_section(container, "Economy status")
+  local status_box = status_content.add({
+    type = "text-box",
+    text = commands_runtime.render_trade_status(),
+    read_only = true,
+  })
+  status_box.style.horizontally_stretchable = true
+  status_box.style.minimal_height = 210
+
+  local lower_row = container.add({type = "flow", direction = "horizontal"})
+  lower_row.style.horizontally_stretchable = true
+  lower_row.style.horizontal_spacing = 12
+
+  local _, orders_content = add_section(lower_row, "Order snapshot")
+  local orders_box = orders_content.add({
+    type = "text-box",
+    text = commands_runtime.render_trade_orders(),
+    read_only = true,
+  })
+  orders_box.style.horizontally_stretchable = true
+  orders_box.style.minimal_height = 180
+
+  local _, contracts_content = add_section(lower_row, "Contract snapshot")
+  local contracts_box = contracts_content.add({
+    type = "text-box",
+    text = commands_runtime.render_trade_contracts(),
+    read_only = true,
+  })
+  contracts_box.style.horizontally_stretchable = true
+  contracts_box.style.minimal_height = 180
+end
+
 local function build_market_tab(player, container)
   local toolbar = container.add({type = "frame", style = "subheader_frame"})
   toolbar.style.horizontally_stretchable = true
@@ -540,6 +656,8 @@ local function build_contracts_tab(player, container)
   local right = columns.add({type = "flow", direction = "vertical"})
   right.style.horizontally_stretchable = true
   right.style.vertical_spacing = 12
+  local contract_feedback = right.add({type = "label", name = constants.gui.contract_feedback, style = "caption_label", caption = ""})
+  contract_feedback.visible = false
   local _, create_content = add_section(right, "Create contract")
 
   local title_row = create_content.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
@@ -587,12 +705,14 @@ function gui.refresh_main(player)
   refresh_market_tab(player)
   refresh_contracts_tab(player)
   refresh_economy_tab(player)
+  refresh_admin_tab(player)
 end
 
 function gui.open_main(player)
   if main_frame(player) then
     gui.refresh_main(player)
     main_frame(player).bring_to_front()
+    set_main_shortcut_toggled(player, true)
     return
   end
 
@@ -638,13 +758,27 @@ function gui.open_main(player)
   economy_content.style.left_padding = 12
   tabs.add_tab(economy_tab, economy_content)
 
-  tabs.selected_tab_index = math.max(1, math.min(ui_state(player.index).selected_main_tab or 1, 3))
+  if player.admin then
+    local admin_tab = tabs.add({type = "tab", caption = "Admin"})
+    local admin_content = tabs.add({type = "flow", name = constants.gui.admin_tab, direction = "vertical"})
+    admin_content.style.horizontally_stretchable = true
+    admin_content.style.vertical_spacing = 12
+    admin_content.style.top_padding = 12
+    admin_content.style.right_padding = 12
+    admin_content.style.bottom_padding = 12
+    admin_content.style.left_padding = 12
+    tabs.add_tab(admin_tab, admin_content)
+  end
+
+  tabs.selected_tab_index = math.max(1, math.min(ui_state(player.index).selected_main_tab or 1, main_tab_count(player)))
+  set_main_shortcut_toggled(player, true)
   gui.refresh_main(player)
 end
 
 function gui.toggle_main(player)
   if main_frame(player) then
     main_frame(player).destroy()
+    set_main_shortcut_toggled(player, false)
   else
     gui.open_main(player)
   end
@@ -656,6 +790,7 @@ function gui.show_trade_box_panel(player, entity)
     return
   end
 
+  set_feedback(player, "trade_box_feedback", nil, nil)
   local order = orders.get_by_box_id(root().orders, util.id_key(entity.unit_number))
   local frame = player.gui.relative.add({
     type = "frame",
@@ -683,6 +818,8 @@ function gui.show_trade_box_panel(player, entity)
   local content = content_frame.add({type = "flow", direction = "vertical"})
   content.style.horizontally_stretchable = true
   content.style.vertical_spacing = 8
+  local feedback = content.add({type = "label", name = constants.gui.buy_order_feedback, style = "caption_label", caption = ""})
+  feedback.visible = false
 
   local selector_row = content.add({type = "flow", direction = "horizontal"})
   selector_row.style.horizontal_spacing = 12
@@ -727,6 +864,7 @@ end
 
 function gui.hide_trade_box_panel(player)
   destroy_named_panel(player, constants.gui.trade_box_root)
+  set_feedback(player, "trade_box_feedback", nil, nil)
 end
 
 function gui.show_selected_inserter(player)
@@ -773,6 +911,7 @@ function gui.handle_click(event)
     if main_frame(player) then
       main_frame(player).destroy()
     end
+    set_main_shortcut_toggled(player, false)
     return
   end
 
@@ -798,7 +937,7 @@ function gui.handle_click(event)
   if name == constants.gui.buy_order_save then
     local box_record = current_box_record(player)
     if not box_record then
-      player.print("Trade Mode: no active trade box selected.")
+      set_feedback(player, "trade_box_feedback", "error", "No active trade box is selected.")
       return
     end
 
@@ -806,7 +945,8 @@ function gui.handle_click(event)
     local item_name = find_descendant(frame, constants.gui.buy_order_item).elem_value
     local unit_price = parse_numeric_text(find_descendant(frame, constants.gui.buy_order_price).text)
     if not item_name or not unit_price then
-      player.print("Trade Mode: select an item and enter a positive integer price.")
+      set_feedback(player, "trade_box_feedback", "error", "Select an item and enter a positive integer price.")
+      refresh_trade_box_panel(player)
       return
     end
 
@@ -828,7 +968,8 @@ function gui.handle_click(event)
         tick = game.tick,
       })
       if not created.ok then
-        player.print("Trade Mode: box already has an order.")
+        set_feedback(player, "trade_box_feedback", "error", "This trade box already has an active order.")
+        refresh_trade_box_panel(player)
         return
       end
     end
@@ -836,6 +977,7 @@ function gui.handle_click(event)
     entities.sync_box_filters(box_record.box_id)
     box_record.tracked_item_count = entities.box_inventory(box_record.entity).get_item_count(item_name)
     entities.refresh_tags_for_box(box_record.box_id)
+    set_feedback(player, "trade_box_feedback", "success", "Trade order saved.")
     refresh_trade_box_panel(player)
     gui.refresh_main(player)
     return
@@ -851,6 +993,7 @@ function gui.handle_click(event)
       local new_status = order.status == "active" and "paused" or "active"
       orders.set_status(root().orders, order.id, new_status, game.tick)
       entities.refresh_tags_for_box(box_record.box_id)
+      set_feedback(player, "trade_box_feedback", "success", "Trade order " .. humanize_status(new_status) .. ".")
       refresh_trade_box_panel(player)
       gui.refresh_main(player)
     end
@@ -868,6 +1011,7 @@ function gui.handle_click(event)
       entities.sync_box_filters(box_record.box_id)
       entities.refresh_tags_for_box(box_record.box_id)
       box_record.tracked_item_count = 0
+      set_feedback(player, "trade_box_feedback", "success", "Trade order deleted.")
       refresh_trade_box_panel(player)
       gui.refresh_main(player)
     end
@@ -878,7 +1022,8 @@ function gui.handle_click(event)
     local ui = ui_state(player.index)
     local amount = parse_numeric_text(ui.contract_amount)
     if ui.contract_title == "" or ui.contract_description == "" or not amount then
-      player.print("Trade Mode: title, briefing, and a positive integer reward are required.")
+      set_feedback(player, "contract_feedback", "error", "Title, briefing, and a positive integer reward are required.")
+      gui.refresh_main(player)
       return
     end
 
@@ -894,6 +1039,7 @@ function gui.handle_click(event)
     ui.contract_description = ""
     ui.contract_amount = ""
     ui.selected_contract_id = nil
+    set_feedback(player, "contract_feedback", "success", "Contract created.")
     gui.refresh_main(player)
     return
   end
@@ -906,7 +1052,9 @@ function gui.handle_click(event)
   if name == constants.gui.contract_assign then
     local result = contracts.assign_self(root().contracts, selected_contract_id, player.index, game.tick)
     if not result.ok then
-      player.print("Trade Mode: assign failed (" .. result.error .. ").")
+      set_feedback(player, "contract_feedback", "error", "Assign failed: " .. humanize_status(result.error) .. ".")
+    else
+      set_feedback(player, "contract_feedback", "success", "Contract assigned to you.")
     end
     gui.refresh_main(player)
     return
@@ -915,7 +1063,9 @@ function gui.handle_click(event)
   if name == constants.gui.contract_unassign then
     local result = contracts.unassign_self(root().contracts, selected_contract_id, player.index, game.tick)
     if not result.ok then
-      player.print("Trade Mode: unassign failed (" .. result.error .. ").")
+      set_feedback(player, "contract_feedback", "error", "Unassign failed: " .. humanize_status(result.error) .. ".")
+    else
+      set_feedback(player, "contract_feedback", "success", "Contract unassigned.")
     end
     gui.refresh_main(player)
     return
@@ -924,7 +1074,9 @@ function gui.handle_click(event)
   if name == constants.gui.contract_pay then
     local result = contracts.payout(root().contracts, root().ledger, selected_contract_id, player.index, game.tick)
     if not result.ok then
-      player.print("Trade Mode: payout failed (" .. result.error .. ").")
+      set_feedback(player, "contract_feedback", "error", "Payout failed: " .. humanize_status(result.error) .. ".")
+    else
+      set_feedback(player, "contract_feedback", "success", "Assignee paid successfully.")
     end
     gui.refresh_main(player)
   end
@@ -972,6 +1124,7 @@ function gui.handle_selection_state_changed(event)
   local ui = ui_state(player.index)
   local index = event.element.selected_index or 0
   ui.selected_contract_id = ui.contract_list_ids[index]
+  ui.contract_feedback = nil
   refresh_contract_detail(player)
 end
 
