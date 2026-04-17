@@ -1,5 +1,6 @@
 local constants = require("trade_mode.runtime.constants")
 local contracts = require("trade_mode.core.contracts")
+local economy = require("trade_mode.runtime.economy")
 local format = require("trade_mode.runtime.format")
 local inserter_stats = require("trade_mode.core.inserter_stats")
 local metrics = require("trade_mode.core.metrics")
@@ -17,7 +18,16 @@ local function emit(command, text)
     end
   end
 
-  log(text)
+  log(type(text) == "string" and text or serpent.line(text))
+end
+
+local function localised(key, ...)
+  local message = {"trade-mode." .. key}
+  local args = {...}
+  for index = 1, #args do
+    message[#message + 1] = args[index]
+  end
+  return message
 end
 
 local function require_admin(command)
@@ -30,7 +40,7 @@ local function require_admin(command)
     return true
   end
 
-  emit(command, "Trade Mode: admin privileges required.")
+  emit(command, localised("admin-required"))
   return false
 end
 
@@ -40,6 +50,39 @@ end
 
 local function current_second()
   return runtime_state.current_second(game.tick)
+end
+
+local function command_force_name(command)
+  if not command.player_index then
+    return nil
+  end
+
+  local player = game.players[command.player_index]
+  if player and player.valid then
+    return player.force.name
+  end
+
+  return nil
+end
+
+local function force_orders(force_name)
+  local visible = {}
+  for _, order in ipairs(orders.list_current(root().orders)) do
+    if not force_name or runtime_state.order_force_name(order) == force_name then
+      visible[#visible + 1] = order
+    end
+  end
+  return visible
+end
+
+local function force_contracts(force_name)
+  local visible = {}
+  for _, contract in ipairs(contracts.list_all(root().contracts)) do
+    if not force_name or runtime_state.contract_force_name(contract) == force_name then
+      visible[#visible + 1] = contract
+    end
+  end
+  return visible
 end
 
 local function lines_for_top_rows(label, rows)
@@ -61,30 +104,39 @@ local function lines_for_top_rows(label, rows)
 end
 
 function commands_runtime.register()
-  commands.add_command("trade_status", "Show current trade economy status.", commands_runtime.trade_status)
-  commands.add_command("trade_money_last_minute", "Show money traded in the last minute.", commands_runtime.trade_money_last_minute)
-  commands.add_command("trade_ubi_last_minute", "Show UBI credited in the last minute.", commands_runtime.trade_ubi_last_minute)
-  commands.add_command("trade_orders", "Show active trade orders.", commands_runtime.trade_orders)
-  commands.add_command("trade_contracts", "Show current trade contracts.", commands_runtime.trade_contracts)
+  commands.add_command("trade_status", localised("command-help-trade-status"), commands_runtime.trade_status)
+  commands.add_command("trade_money_last_minute", localised("command-help-trade-money-last-minute"), commands_runtime.trade_money_last_minute)
+  commands.add_command("trade_ubi_last_minute", localised("command-help-trade-ubi-last-minute"), commands_runtime.trade_ubi_last_minute)
+  commands.add_command("trade_orders", localised("command-help-trade-orders"), commands_runtime.trade_orders)
+  commands.add_command("trade_contracts", localised("command-help-trade-contracts"), commands_runtime.trade_contracts)
 end
 
-function commands_runtime.render_trade_status()
+function commands_runtime.render_trade_status(force_name)
   local state = root()
-  local snapshot = state.runtime.economy_snapshot
+  local snapshot = economy.snapshot(force_name)
   local second = current_second()
   local lines = {
-    string.format("Trade status"),
-    string.format("window: last 60 seconds (bucketed by second)"),
-    string.format("gold_per_second: %.2f", snapshot.gold_per_second),
-    string.format("recent_raw_ore_per_minute: %.2f", snapshot.recent_raw_ore_per_minute),
-    string.format("money_traded_last_minute: %d", metrics.trade_last_minute(state.metrics, second)),
-    string.format("ubi_last_minute: %d", metrics.ubi_last_minute(state.metrics, second)),
-    string.format("active_orders: %d", orders.count_active(state.orders)),
-    string.format("active_contracts: %d", contracts.count_openish(state.contracts)),
+    "Trade status",
   }
 
-  local top_payers = metrics.top_payers(state.metrics, second, 3)
-  local top_recipients = metrics.top_recipients(state.metrics, second, 3)
+  if force_name then
+    lines[#lines + 1] = string.format("force: %s", force_name)
+  end
+
+  lines[#lines + 1] = "window: last 60 seconds (bucketed by second)"
+  lines[#lines + 1] = string.format("gold_per_second: %.2f", snapshot.gold_per_second)
+  lines[#lines + 1] = string.format("recent_raw_ore_per_minute: %.2f", snapshot.recent_raw_ore_per_minute)
+  lines[#lines + 1] = string.format("money_traded_last_minute: %d", metrics.trade_last_minute(state.metrics, second, force_name))
+  lines[#lines + 1] = string.format("ubi_last_minute: %d", metrics.ubi_last_minute(state.metrics, second, force_name))
+  lines[#lines + 1] = string.format("active_orders: %d", #force_orders(force_name))
+  lines[#lines + 1] = string.format("active_contracts: %d", contracts.count_openish(state.contracts, force_name))
+
+  local top_payers = metrics.top_payers(state.metrics, second, 3, function(row)
+    return runtime_state.player_in_force(row.player_id, force_name)
+  end)
+  local top_recipients = metrics.top_recipients(state.metrics, second, 3, function(row)
+    return runtime_state.player_in_force(row.player_id, force_name)
+  end)
   local top_inserters = inserter_stats.top(state.inserter_stats, 3)
 
   for _, line in ipairs(lines_for_top_rows("top_payers:", top_payers)) do
@@ -98,14 +150,23 @@ function commands_runtime.render_trade_status()
   if #top_inserters == 0 then
     lines[#lines + 1] = "none"
   else
-    for index = 1, #top_inserters do
-      lines[#lines + 1] = string.format(
-        "%d. inserter %s owner=%s payout=%d",
-        index,
-        top_inserters[index].inserter_id,
-        top_inserters[index].owner_id and runtime_state.player_name(top_inserters[index].owner_id) or "Unknown",
-        top_inserters[index].lifetime_payout
-      )
+    local added_any = false
+    local rank = 1
+    for _, entry in ipairs(top_inserters) do
+      if not force_name or runtime_state.player_in_force(entry.owner_id or 0, force_name) then
+        added_any = true
+        lines[#lines + 1] = string.format(
+          "%d. inserter %s owner=%s payout=%d",
+          rank,
+          entry.inserter_id,
+          entry.owner_id and runtime_state.player_name(entry.owner_id) or "Unknown",
+          entry.lifetime_payout
+        )
+        rank = rank + 1
+      end
+    end
+    if not added_any then
+      lines[#lines + 1] = "none"
     end
   end
 
@@ -117,16 +178,20 @@ function commands_runtime.trade_status(command)
     return
   end
 
-  emit(command, commands_runtime.render_trade_status())
+  emit(command, commands_runtime.render_trade_status(command_force_name(command)))
 end
 
-function commands_runtime.render_trade_money_last_minute()
+function commands_runtime.render_trade_money_last_minute(force_name)
   local second = current_second()
-  return format.multiline({
+  local lines = {
     "Trade money last minute",
-    "window: last 60 seconds (bucketed by second)",
-    string.format("value: %d", metrics.trade_last_minute(root().metrics, second)),
-  })
+  }
+  if force_name then
+    lines[#lines + 1] = string.format("force: %s", force_name)
+  end
+  lines[#lines + 1] = "window: last 60 seconds (bucketed by second)"
+  lines[#lines + 1] = string.format("value: %d", metrics.trade_last_minute(root().metrics, second, force_name))
+  return format.multiline(lines)
 end
 
 function commands_runtime.trade_money_last_minute(command)
@@ -134,16 +199,20 @@ function commands_runtime.trade_money_last_minute(command)
     return
   end
 
-  emit(command, commands_runtime.render_trade_money_last_minute())
+  emit(command, commands_runtime.render_trade_money_last_minute(command_force_name(command)))
 end
 
-function commands_runtime.render_trade_ubi_last_minute()
+function commands_runtime.render_trade_ubi_last_minute(force_name)
   local second = current_second()
-  return format.multiline({
+  local lines = {
     "Trade UBI last minute",
-    "window: last 60 seconds (bucketed by second)",
-    string.format("value: %d", metrics.ubi_last_minute(root().metrics, second)),
-  })
+  }
+  if force_name then
+    lines[#lines + 1] = string.format("force: %s", force_name)
+  end
+  lines[#lines + 1] = "window: last 60 seconds (bucketed by second)"
+  lines[#lines + 1] = string.format("value: %d", metrics.ubi_last_minute(root().metrics, second, force_name))
+  return format.multiline(lines)
 end
 
 function commands_runtime.trade_ubi_last_minute(command)
@@ -151,16 +220,19 @@ function commands_runtime.trade_ubi_last_minute(command)
     return
   end
 
-  emit(command, commands_runtime.render_trade_ubi_last_minute())
+  emit(command, commands_runtime.render_trade_ubi_last_minute(command_force_name(command)))
 end
 
-function commands_runtime.render_trade_orders()
-  local state = root()
+function commands_runtime.render_trade_orders(force_name)
   local lines = {
     "Trade orders",
-    "window: current snapshot",
   }
-  local current_orders = orders.list_current(state.orders)
+  if force_name then
+    lines[#lines + 1] = string.format("force: %s", force_name)
+  end
+  lines[#lines + 1] = "window: current snapshot"
+
+  local current_orders = force_orders(force_name)
   if #current_orders == 0 then
     lines[#lines + 1] = "none"
   else
@@ -185,16 +257,19 @@ function commands_runtime.trade_orders(command)
     return
   end
 
-  emit(command, commands_runtime.render_trade_orders())
+  emit(command, commands_runtime.render_trade_orders(command_force_name(command)))
 end
 
-function commands_runtime.render_trade_contracts()
-  local state = root()
+function commands_runtime.render_trade_contracts(force_name)
   local lines = {
     "Trade contracts",
-    "window: current snapshot",
   }
-  local current_contracts = contracts.list_all(state.contracts)
+  if force_name then
+    lines[#lines + 1] = string.format("force: %s", force_name)
+  end
+  lines[#lines + 1] = "window: current snapshot"
+
+  local current_contracts = force_contracts(force_name)
   if #current_contracts == 0 then
     lines[#lines + 1] = "none"
   else
@@ -219,7 +294,7 @@ function commands_runtime.trade_contracts(command)
     return
   end
 
-  emit(command, commands_runtime.render_trade_contracts())
+  emit(command, commands_runtime.render_trade_contracts(command_force_name(command)))
 end
 
 return commands_runtime

@@ -70,6 +70,12 @@ local function handle_player_joined(event)
   gui.refresh_context_panels(player)
 end
 
+local function handle_player_changed_force(event)
+  local player = game.players[event.player_index]
+  runtime_state.track_player(player)
+  gui.refresh_context_panels(player)
+end
+
 local function handle_selected_entity_changed(event)
   local player = game.players[event.player_index]
   gui.show_selected_inserter(player)
@@ -160,6 +166,7 @@ local function add_remote_interface()
         tracked_trade_boxes = tracked_trade_boxes,
         tracked_inserters = tracked_inserters,
         economy = state.runtime.economy_snapshot,
+        economy_by_force = state.runtime.economy_snapshots,
         inserter_stats = state.inserter_stats.by_id,
         reports = {
           trade_status = commands_runtime.render_trade_status(),
@@ -175,9 +182,11 @@ local function add_remote_interface()
     end,
     create_order = function(box_unit_number, buyer_id, item_name, unit_price)
       local box_id = util.id_key(box_unit_number)
+      local buyer = game.get_player(buyer_id)
       local created = orders.create_order(runtime_state.root().orders, {
         box_id = box_id,
         buyer_id = buyer_id,
+        force_name = buyer and buyer.valid and buyer.force.name or nil,
         item_name = item_name,
         unit_price = unit_price,
         tick = game.tick,
@@ -189,8 +198,10 @@ local function add_remote_interface()
       return created
     end,
     create_contract = function(creator_id, title, description, amount)
+      local creator = game.get_player(creator_id)
       return contracts.create_contract(runtime_state.root().contracts, {
         creator_id = creator_id,
+        force_name = creator and creator.valid and creator.force.name or nil,
         title = title,
         description = description,
         amount = amount,
@@ -198,13 +209,35 @@ local function add_remote_interface()
       })
     end,
     assign_contract = function(contract_id, player_id)
-      return contracts.assign_self(runtime_state.root().contracts, contract_id, player_id, game.tick)
+      local player = game.get_player(player_id)
+      return contracts.assign_self(
+        runtime_state.root().contracts,
+        contract_id,
+        player_id,
+        game.tick,
+        player and player.valid and player.force.name or nil
+      )
     end,
     unassign_contract = function(contract_id, player_id)
-      return contracts.unassign_self(runtime_state.root().contracts, contract_id, player_id, game.tick)
+      local player = game.get_player(player_id)
+      return contracts.unassign_self(
+        runtime_state.root().contracts,
+        contract_id,
+        player_id,
+        game.tick,
+        player and player.valid and player.force.name or nil
+      )
     end,
     pay_contract = function(contract_id, actor_id)
-      return contracts.payout(runtime_state.root().contracts, runtime_state.root().ledger, contract_id, actor_id, game.tick)
+      local player = game.get_player(actor_id)
+      return contracts.payout(
+        runtime_state.root().contracts,
+        runtime_state.root().ledger,
+        contract_id,
+        actor_id,
+        game.tick,
+        player and player.valid and player.force.name or nil
+      )
     end,
     reconcile_now = function()
       trade.reconcile_all_boxes(game.tick)
@@ -266,6 +299,7 @@ function app.register()
 
   script.on_event(defines.events.on_player_created, handle_player_created)
   script.on_event(defines.events.on_player_joined_game, handle_player_joined)
+  script.on_event(defines.events.on_player_changed_force, handle_player_changed_force)
   script.on_event(defines.events.on_built_entity, handle_built_entity, tracked_entity_filters)
   script.on_event(defines.events.on_robot_built_entity, handle_built_entity, tracked_entity_filters)
   script.on_event(defines.events.script_raised_built, handle_built_entity, tracked_entity_filters)

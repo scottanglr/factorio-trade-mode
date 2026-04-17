@@ -51,6 +51,7 @@ function orders.create_order(state, fields)
     id = state.next_id,
     box_id = box_id,
     buyer_id = fields.buyer_id,
+    force_name = fields.force_name,
     item_name = fields.item_name,
     unit_price = fields.unit_price,
     status = "active",
@@ -245,4 +246,3 @@ function orders.normalize(state)
 end
 
 return orders
-

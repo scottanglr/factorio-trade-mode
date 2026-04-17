@@ -187,10 +187,27 @@ local function reconcile_order_box(box_record, tick)
     return
   end
 
+  if not runtime_state.player_in_force(source.player_index, box_record.entity.force.name) then
+    if source.kind == "manual" then
+      refund_to_player(box_record, order.item_name, delta, source.player_index)
+    else
+      refund_to_inserter_source(box_record, order.item_name, delta, source.inserter_record)
+    end
+    box_record.tracked_item_count = inventory.get_item_count(order.item_name)
+    return
+  end
+
   local result = orders.settle_insert(root.orders, root.ledger, order.id, source.player_index, delta, tick)
   if result.ok then
     local current_second = runtime_state.current_second(tick)
-    metrics.record_trade(root.metrics, current_second, result.total, order.buyer_id, source.player_index)
+    metrics.record_trade(
+      root.metrics,
+      current_second,
+      result.total,
+      order.buyer_id,
+      source.player_index,
+      runtime_state.order_force_name(order) or box_record.entity.force.name
+    )
     metrics.set_snapshot_counts(
       root.metrics,
       orders.count_active(root.orders),

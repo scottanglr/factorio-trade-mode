@@ -19,6 +19,7 @@ local function ensure_bucket(bucket_map, second)
   if bucket == nil then
     bucket = {
       total = 0,
+      by_force = {},
       by_payer = {},
       by_recipient = {},
       by_player = {},
@@ -36,7 +37,7 @@ local function prune_window(bucket_map, current_second, window_seconds)
   end
 end
 
-local function aggregate_actor_map(bucket_map, current_second, window_seconds, field_name)
+local function aggregate_actor_map(bucket_map, current_second, window_seconds, field_name, row_filter)
   local aggregate = {}
   for second, bucket in pairs(bucket_map) do
     if second > (current_second - window_seconds) then
@@ -48,10 +49,13 @@ local function aggregate_actor_map(bucket_map, current_second, window_seconds, f
 
   local rows = {}
   for actor_id, amount in pairs(aggregate) do
-    rows[#rows + 1] = {
+    local row = {
       player_id = actor_id,
       amount = amount,
     }
+    if row_filter == nil or row_filter(row) then
+      rows[#rows + 1] = row
+    end
   end
 
   table.sort(rows, function(left, right)
@@ -64,7 +68,7 @@ local function aggregate_actor_map(bucket_map, current_second, window_seconds, f
   return rows
 end
 
-function metrics.record_trade(state, second, amount, payer_id, recipient_id)
+function metrics.record_trade(state, second, amount, payer_id, recipient_id, force_name)
   ensure_state(state)
   util.assert_non_negative_integer(second, "second")
   util.assert_positive_integer(amount, "amount")
@@ -73,11 +77,14 @@ function metrics.record_trade(state, second, amount, payer_id, recipient_id)
 
   local bucket = ensure_bucket(state.windows.traded, second)
   bucket.total = bucket.total + amount
+  if force_name then
+    bucket.by_force[force_name] = (bucket.by_force[force_name] or 0) + amount
+  end
   bucket.by_payer[payer_id] = (bucket.by_payer[payer_id] or 0) + amount
   bucket.by_recipient[recipient_id] = (bucket.by_recipient[recipient_id] or 0) + amount
 end
 
-function metrics.record_ubi(state, second, amount, player_id)
+function metrics.record_ubi(state, second, amount, player_id, force_name)
   ensure_state(state)
   util.assert_non_negative_integer(second, "second")
   util.assert_positive_integer(amount, "amount")
@@ -85,31 +92,38 @@ function metrics.record_ubi(state, second, amount, player_id)
 
   local bucket = ensure_bucket(state.windows.ubi, second)
   bucket.total = bucket.total + amount
+  if force_name then
+    bucket.by_force[force_name] = (bucket.by_force[force_name] or 0) + amount
+  end
   bucket.by_player[player_id] = (bucket.by_player[player_id] or 0) + amount
 end
 
-function metrics.sum_window(state, window_name, current_second, window_seconds)
+function metrics.sum_window(state, window_name, current_second, window_seconds, force_name)
   ensure_state(state)
   local bucket_map = state.windows[window_name]
   local total = 0
   for second, bucket in pairs(bucket_map) do
     if second > (current_second - window_seconds) then
-      total = total + bucket.total
+      if force_name then
+        total = total + (bucket.by_force[force_name] or 0)
+      else
+        total = total + bucket.total
+      end
     end
   end
   return total
 end
 
-function metrics.trade_last_minute(state, current_second)
-  return metrics.sum_window(state, "traded", current_second, DEFAULT_WINDOW)
+function metrics.trade_last_minute(state, current_second, force_name)
+  return metrics.sum_window(state, "traded", current_second, DEFAULT_WINDOW, force_name)
 end
 
-function metrics.ubi_last_minute(state, current_second)
-  return metrics.sum_window(state, "ubi", current_second, DEFAULT_WINDOW)
+function metrics.ubi_last_minute(state, current_second, force_name)
+  return metrics.sum_window(state, "ubi", current_second, DEFAULT_WINDOW, force_name)
 end
 
-function metrics.top_payers(state, current_second, limit)
-  local rows = aggregate_actor_map(ensure_state(state).windows.traded, current_second, DEFAULT_WINDOW, "by_payer")
+function metrics.top_payers(state, current_second, limit, row_filter)
+  local rows = aggregate_actor_map(ensure_state(state).windows.traded, current_second, DEFAULT_WINDOW, "by_payer", row_filter)
   if limit and #rows > limit then
     while #rows > limit do
       table.remove(rows)
@@ -118,8 +132,8 @@ function metrics.top_payers(state, current_second, limit)
   return rows
 end
 
-function metrics.top_recipients(state, current_second, limit)
-  local rows = aggregate_actor_map(ensure_state(state).windows.traded, current_second, DEFAULT_WINDOW, "by_recipient")
+function metrics.top_recipients(state, current_second, limit, row_filter)
+  local rows = aggregate_actor_map(ensure_state(state).windows.traded, current_second, DEFAULT_WINDOW, "by_recipient", row_filter)
   if limit and #rows > limit then
     while #rows > limit do
       table.remove(rows)
@@ -148,4 +162,3 @@ function metrics.normalize(state)
 end
 
 return metrics
-

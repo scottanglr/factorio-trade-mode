@@ -25,6 +25,7 @@ function contracts.create_contract(state, fields)
   local contract = {
     id = state.next_id,
     creator_id = fields.creator_id,
+    force_name = fields.force_name,
     title = fields.title,
     description = fields.description,
     amount = fields.amount,
@@ -47,7 +48,7 @@ function contracts.get_by_id(state, contract_id)
   return get_contract(state, contract_id)
 end
 
-function contracts.assign_self(state, contract_id, player_id, tick)
+function contracts.assign_self(state, contract_id, player_id, tick, force_name)
   local contract = get_contract(state, contract_id)
   util.assert_positive_integer(player_id, "player_id")
   if not contract then
@@ -71,6 +72,13 @@ function contracts.assign_self(state, contract_id, player_id, tick)
     }
   end
 
+  if contract.force_name and force_name and contract.force_name ~= force_name then
+    return {
+      ok = false,
+      error = "wrong_force",
+    }
+  end
+
   contract.assignee_id = player_id
   contract.status = "assigned"
   contract.updated_tick = tick or contract.updated_tick
@@ -80,7 +88,7 @@ function contracts.assign_self(state, contract_id, player_id, tick)
   }
 end
 
-function contracts.unassign_self(state, contract_id, player_id, tick)
+function contracts.unassign_self(state, contract_id, player_id, tick, force_name)
   local contract = get_contract(state, contract_id)
   util.assert_positive_integer(player_id, "player_id")
   if not contract then
@@ -104,6 +112,13 @@ function contracts.unassign_self(state, contract_id, player_id, tick)
     }
   end
 
+  if contract.force_name and force_name and contract.force_name ~= force_name then
+    return {
+      ok = false,
+      error = "wrong_force",
+    }
+  end
+
   contract.assignee_id = nil
   contract.status = "open"
   contract.updated_tick = tick or contract.updated_tick
@@ -113,7 +128,7 @@ function contracts.unassign_self(state, contract_id, player_id, tick)
   }
 end
 
-function contracts.payout(state, ledger_state, contract_id, actor_id, tick)
+function contracts.payout(state, ledger_state, contract_id, actor_id, tick, force_name)
   local contract = get_contract(state, contract_id)
   util.assert_positive_integer(actor_id, "actor_id")
   if not contract then
@@ -127,6 +142,13 @@ function contracts.payout(state, ledger_state, contract_id, actor_id, tick)
     return {
       ok = false,
       error = "unauthorized",
+    }
+  end
+
+  if contract.force_name and force_name and contract.force_name ~= force_name then
+    return {
+      ok = false,
+      error = "wrong_force",
     }
   end
 
@@ -163,11 +185,13 @@ function contracts.payout(state, ledger_state, contract_id, actor_id, tick)
   }
 end
 
-function contracts.list_all(state)
+function contracts.list_all(state, force_name)
   ensure_state(state)
   local list = {}
   for _, contract in pairs(state.by_id) do
-    list[#list + 1] = contract
+    if not force_name or contract.force_name == nil or contract.force_name == force_name then
+      list[#list + 1] = contract
+    end
   end
 
   table.sort(list, function(left, right)
@@ -183,11 +207,11 @@ function contracts.list_all(state)
   return list
 end
 
-function contracts.count_openish(state)
+function contracts.count_openish(state, force_name)
   ensure_state(state)
   local count = 0
   for _, contract in pairs(state.by_id) do
-    if contract.status ~= "completed" then
+    if contract.status ~= "completed" and (not force_name or contract.force_name == nil or contract.force_name == force_name) then
       count = count + 1
     end
   end

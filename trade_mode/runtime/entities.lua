@@ -99,22 +99,16 @@ function entities.refresh_tags_for_box(box_id)
   destroy_tags_for_box(box_id)
   local tags = {}
   local buyer_player = game.get_player(order.buyer_id)
-  for force_name, force in pairs(game.forces) do
-    if force_name ~= "enemy" and force_name ~= "neutral" then
-      local tag_spec = {
-        position = record.entity.position,
-        icon = {type = "item", name = order.item_name},
-        text = string.format("%s @ %d", order.item_name, order.unit_price),
-      }
-      if buyer_player and buyer_player.valid then
-        tag_spec.last_user = buyer_player
-      end
-      tags[force_name] = force.add_chart_tag(
-        record.entity.surface,
-        tag_spec
-      )
-    end
+  local force = record.entity.force
+  local tag_spec = {
+    position = record.entity.position,
+    icon = {type = "item", name = order.item_name},
+    text = tostring(order.unit_price),
+  }
+  if buyer_player and buyer_player.valid then
+    tag_spec.last_user = buyer_player
   end
+  tags[force.name] = force.add_chart_tag(record.entity.surface, tag_spec)
   root.runtime.market_tags[box_id] = tags
 end
 
@@ -264,12 +258,16 @@ function entities.sync_box_filters(box_id)
   end
 
   local inventory = box_inventory(box_record.entity)
+  if not inventory.supports_filters() then
+    return
+  end
+
   local order = orders.get_by_box_id(root.orders, box_id)
   local item_name = order and order.item_name or nil
   for slot = 1, #inventory do
-    pcall(function()
+    if item_name == nil or inventory.can_set_filter(slot, item_name) then
       inventory.set_filter(slot, item_name)
-    end)
+    end
   end
 end
 

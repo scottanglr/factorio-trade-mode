@@ -34,6 +34,27 @@ local function root()
   return runtime_state.root()
 end
 
+local function localised(key, ...)
+  local message = {"trade-mode." .. key}
+  local args = {...}
+  for index = 1, #args do
+    message[#message + 1] = args[index]
+  end
+  return message
+end
+
+local function player_force_name(player)
+  return player and player.valid and player.force.name or nil
+end
+
+local function localised_status(status)
+  return localised("status-" .. (status or "unknown"))
+end
+
+local function localised_error(error_code)
+  return localised("error-" .. (error_code or "unknown"))
+end
+
 local function ui_state(player_index)
   local runtime = runtime_state.runtime()
   runtime.player_ui[player_index] = runtime.player_ui[player_index] or {
@@ -286,28 +307,28 @@ local function refresh_trade_box_panel(player)
   if selected_item then
     local suggested = pricing.get_suggested_price(suggested_prices, selected_item)
     if suggested then
-      suggested_label.caption = "Suggested price: " .. format.money(suggested)
+      suggested_label.caption = localised("suggested-price", format.localised_money(suggested))
     else
-      suggested_label.caption = "Suggested price: n/a"
+      suggested_label.caption = localised("suggested-price-na")
     end
   else
-    suggested_label.caption = "Suggested price: n/a"
+    suggested_label.caption = localised("suggested-price-na")
   end
 
   if order then
-    status_label.caption = "Status: " .. humanize_status(order.status)
-    stored_label.caption = "Stored in box: " .. tostring(box_record.tracked_item_count or 0)
-    last_trade_label.caption = "Last trade: " .. format.tick_age(game.tick, order.last_trade_tick)
-    total_label.caption = "Lifetime traded: " .. format.money(order.total_traded or 0)
-    toggle_button.caption = order.status == "active" and "Pause order" or "Resume order"
+    status_label.caption = localised("status-label", localised_status(order.status))
+    stored_label.caption = localised("stored-count", box_record.tracked_item_count or 0)
+    last_trade_label.caption = localised("last-trade-label", format.localised_tick_age(game.tick, order.last_trade_tick))
+    total_label.caption = localised("lifetime-traded", format.localised_money(order.total_traded or 0))
+    toggle_button.caption = order.status == "active" and localised("pause-order") or localised("resume-order")
     toggle_button.enabled = true
     delete_button.enabled = true
   else
-    status_label.caption = "Status: No active order"
-    stored_label.caption = "Stored in box: " .. tostring(box_record.tracked_item_count or 0)
-    last_trade_label.caption = "Last trade: Never"
-    total_label.caption = "Lifetime traded: " .. format.money(0)
-    toggle_button.caption = "Pause order"
+    status_label.caption = localised("status-label", localised("no-active-order"))
+    stored_label.caption = localised("stored-count", box_record.tracked_item_count or 0)
+    last_trade_label.caption = localised("last-trade-label", localised("never"))
+    total_label.caption = localised("lifetime-traded", format.localised_money(0))
+    toggle_button.caption = localised("pause-order")
     toggle_button.enabled = false
     delete_button.enabled = false
   end
@@ -328,18 +349,18 @@ local function refresh_inserter_panel(player)
   local record = runtime_state.runtime().inserters[util.id_key(selected.unit_number)]
   local content = find_descendant(frame, INSERTER_CONTENT)
   clear_children(content)
-  add_detail_row(content, "Owner", record and record.owner_player_index and runtime_state.player_name(record.owner_player_index) or "Unknown")
-  add_detail_row(content, "Pending box", record and record.pending_box_id and entities.describe_box(record.pending_box_id) or "Idle")
-  add_detail_row(content, "Lifetime payout", format.money(stats and stats.lifetime_payout or 0))
-  add_detail_row(content, "Last recipient", stats and stats.last_recipient_id and runtime_state.player_name(stats.last_recipient_id) or "None")
-  add_detail_row(content, "Last trade", stats and format.tick_age(game.tick, stats.last_trade_tick) or "Never")
+  add_detail_row(content, localised("owner"), record and record.owner_player_index and runtime_state.player_name(record.owner_player_index) or localised("unknown"))
+  add_detail_row(content, localised("pending-box"), record and record.pending_box_id and entities.describe_box(record.pending_box_id) or localised("idle"))
+  add_detail_row(content, localised("lifetime-payout"), format.localised_money(stats and stats.lifetime_payout or 0))
+  add_detail_row(content, localised("last-recipient"), stats and stats.last_recipient_id and runtime_state.player_name(stats.last_recipient_id) or localised("none"))
+  add_detail_row(content, localised("last-trade"), format.localised_tick_age(game.tick, stats and stats.last_trade_tick or nil))
 end
 
 local function filtered_orders(player)
   local filter_text = string.lower(ui_state(player.index).market_filter or "")
   local list = {}
   for _, order in ipairs(orders.list_current(root().orders)) do
-    if filter_text == "" or string.find(string.lower(order.item_name), filter_text, 1, true) then
+    if runtime_state.order_force_name(order) == player_force_name(player) and (filter_text == "" or string.find(string.lower(order.item_name), filter_text, 1, true)) then
       list[#list + 1] = order
     end
   end
@@ -354,29 +375,29 @@ local function refresh_market_tab(player)
   end
 
   local market_orders = filtered_orders(player)
-  summary.caption = string.format("%d listings", #market_orders)
+  summary.caption = localised("listings-count", #market_orders)
   clear_children(scroll)
   if #market_orders == 0 then
-    scroll.add({type = "label", style = "caption_label", caption = "No buy orders match the current filter."})
+    scroll.add({type = "label", style = "caption_label", caption = localised("no-buy-orders-match")})
     return
   end
 
   local table_element = scroll.add({type = "table", name = constants.gui.market_orders_table, style = "table_with_selection", column_count = 6})
   table_element.style.horizontally_stretchable = true
   table_element.draw_horizontal_line_after_headers = true
-  table_element.add({type = "label", style = "bold_label", caption = "Item"})
-  table_element.add({type = "label", style = "bold_label", caption = "Price"})
-  table_element.add({type = "label", style = "bold_label", caption = "Buyer"})
-  table_element.add({type = "label", style = "bold_label", caption = "Box"})
-  table_element.add({type = "label", style = "bold_label", caption = "Status"})
-  table_element.add({type = "label", style = "bold_label", caption = "Last trade"})
+  table_element.add({type = "label", style = "bold_label", caption = localised("item")})
+  table_element.add({type = "label", style = "bold_label", caption = localised("price")})
+  table_element.add({type = "label", style = "bold_label", caption = localised("buyer")})
+  table_element.add({type = "label", style = "bold_label", caption = localised("box")})
+  table_element.add({type = "label", style = "bold_label", caption = localised("status")})
+  table_element.add({type = "label", style = "bold_label", caption = localised("last-trade")})
   for _, order in ipairs(market_orders) do
     table_element.add({type = "label", caption = item_caption(order.item_name)})
-    table_element.add({type = "label", caption = format.money(order.unit_price)})
+    table_element.add({type = "label", caption = format.localised_money(order.unit_price)})
     table_element.add({type = "label", caption = runtime_state.player_name(order.buyer_id)})
     table_element.add({type = "label", caption = entities.describe_box(order.box_id)})
-    table_element.add({type = "label", caption = humanize_status(order.status)})
-    table_element.add({type = "label", caption = format.tick_age(game.tick, order.last_trade_tick)})
+    table_element.add({type = "label", caption = localised_status(order.status)})
+    table_element.add({type = "label", caption = format.localised_tick_age(game.tick, order.last_trade_tick)})
   end
 end
 
@@ -390,19 +411,19 @@ local function refresh_contract_detail(player)
   local state = root()
   local ui = ui_state(player.index)
   local selected = ui.selected_contract_id and contracts.get_by_id(state.contracts, ui.selected_contract_id) or nil
-  if not selected then
-    container.add({type = "label", style = "caption_label", caption = "Select a contract to inspect the payout and assignment details."})
+  if not selected or runtime_state.contract_force_name(selected) ~= player_force_name(player) then
+    container.add({type = "label", style = "caption_label", caption = localised("select-contract")})
     return
   end
 
-  add_detail_row(container, "Title", selected.title)
-  add_detail_row(container, "Creator", runtime_state.player_name(selected.creator_id))
-  add_detail_row(container, "Reward", format.money(selected.amount))
-  add_detail_row(container, "Assignee", selected.assignee_id and runtime_state.player_name(selected.assignee_id) or "Unassigned")
-  add_detail_row(container, "Status", humanize_status(selected.status))
-  add_detail_row(container, "Created", format.tick_age(game.tick, selected.created_tick))
+  add_detail_row(container, localised("title"), selected.title)
+  add_detail_row(container, localised("creator"), runtime_state.player_name(selected.creator_id))
+  add_detail_row(container, localised("reward"), format.localised_money(selected.amount))
+  add_detail_row(container, localised("assignee"), selected.assignee_id and runtime_state.player_name(selected.assignee_id) or localised("unassigned"))
+  add_detail_row(container, localised("status"), localised_status(selected.status))
+  add_detail_row(container, localised("created"), format.localised_tick_age(game.tick, selected.created_tick))
   if selected.paid_tick then
-    add_detail_row(container, "Paid", format.tick_age(game.tick, selected.paid_tick))
+    add_detail_row(container, localised("paid"), format.localised_tick_age(game.tick, selected.paid_tick))
   end
 
   local description = container.add({type = "text-box", text = selected.description, read_only = true})
@@ -415,9 +436,9 @@ local function refresh_contract_detail(player)
     button_flow.style.horizontally_stretchable = true
     add_horizontal_pusher(button_flow)
     if selected.assignee_id == current_player_id then
-      button_flow.add({type = "button", name = constants.gui.contract_unassign, caption = "Unassign"})
+      button_flow.add({type = "button", name = constants.gui.contract_unassign, caption = localised("unassign")})
     else
-      button_flow.add({type = "button", name = constants.gui.contract_assign, caption = "Assign to me"})
+      button_flow.add({type = "button", name = constants.gui.contract_assign, caption = localised("assign-to-me")})
     end
   end
 
@@ -425,7 +446,7 @@ local function refresh_contract_detail(player)
     local payout_flow = container.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
     payout_flow.style.horizontally_stretchable = true
     add_horizontal_pusher(payout_flow)
-    payout_flow.add({type = "button", name = constants.gui.contract_pay, caption = "Pay assignee"})
+    payout_flow.add({type = "button", name = constants.gui.contract_pay, caption = localised("pay-assignee")})
   end
 end
 
@@ -441,12 +462,12 @@ local function refresh_contracts_tab(player)
 
   apply_feedback(feedback_label, ui.contract_feedback)
 
-  local contract_rows = contracts.list_all(state.contracts)
+  local contract_rows = contracts.list_all(state.contracts, player_force_name(player))
   ui.contract_list_ids = {}
   local items = {}
   for _, contract in ipairs(contract_rows) do
     ui.contract_list_ids[#ui.contract_list_ids + 1] = contract.id
-    items[#items + 1] = {"", "#", tostring(contract.id), "  ", contract.title, "  [", humanize_status(contract.status), "]"}
+    items[#items + 1] = {"", "#", tostring(contract.id), "  ", contract.title, "  [", localised_status(contract.status), "]"}
   end
 
   list_box.items = items
@@ -464,7 +485,7 @@ local function refresh_contracts_tab(player)
     list_box.selected_index = selected_index
   end
 
-  count_label.caption = string.format("%d open", contracts.count_openish(state.contracts))
+  count_label.caption = localised("contracts-open-count", contracts.count_openish(state.contracts, player_force_name(player)))
   refresh_contract_detail(player)
 end
 
@@ -475,42 +496,48 @@ local function refresh_economy_tab(player)
   end
   clear_children(container)
 
-  local snapshot = economy.snapshot()
+  local force_name = player_force_name(player)
+  local snapshot = economy.snapshot(force_name)
   local second = runtime_state.current_second(game.tick)
   local state = root()
 
   local cards = container.add({type = "flow", direction = "horizontal"})
   cards.style.horizontally_stretchable = true
   cards.style.horizontal_spacing = 12
-  add_metric_card(cards, "UBI rate", string.format("%.2f gold/s", snapshot.gold_per_second), "Current global payout")
-  add_metric_card(cards, "Ore throughput", string.format("%.1f / min", snapshot.recent_raw_ore_per_minute), "All tracked raw ore")
-  add_metric_card(cards, "Last-minute UBI", format.money(metrics.ubi_last_minute(state.metrics, second)), "Rolling 60-second window")
-  add_metric_card(cards, "Last-minute trade", format.money(metrics.trade_last_minute(state.metrics, second)), "Rolling 60-second window")
+  add_metric_card(cards, localised("ubi-rate"), localised("gold-per-second", string.format("%.2f", snapshot.gold_per_second)), localised("current-force-payout"))
+  add_metric_card(cards, localised("ore-throughput"), localised("units-per-minute-compact", string.format("%.1f", snapshot.recent_raw_ore_per_minute)), localised("tracked-raw-ore-force"))
+  add_metric_card(cards, localised("last-minute-ubi"), format.localised_money(metrics.ubi_last_minute(state.metrics, second, force_name)), localised("rolling-window"))
+  add_metric_card(cards, localised("last-minute-trade"), format.localised_money(metrics.trade_last_minute(state.metrics, second, force_name)), localised("rolling-window"))
 
   local upper_row = container.add({type = "flow", direction = "horizontal"})
   upper_row.style.horizontally_stretchable = true
   upper_row.style.horizontal_spacing = 12
 
-  local _, ore_content = add_section(upper_row, "Ore throughput")
+  local _, ore_content = add_section(upper_row, localised("ore-throughput"))
   local ore_table = ore_content.add({type = "table", column_count = 2})
   ore_table.style.horizontally_stretchable = true
-  add_two_column_header(ore_table, "Resource", "Units / minute")
+  add_two_column_header(ore_table, localised("resource"), localised("units-per-minute"))
   for _, ore_name in ipairs(constants.ore_names) do
     ore_table.add({type = "label", caption = item_caption(ore_name)})
     ore_table.add({type = "label", caption = string.format("%.1f", snapshot.breakdown_per_minute[ore_name] or 0)})
   end
 
-  local _, balance_content = add_section(upper_row, "Top balances")
-  local balance_rows = ledger.top_balances(state.ledger, 5)
+  local _, balance_content = add_section(upper_row, localised("top-balances"))
+  local balance_rows = {}
+  for _, row in ipairs(ledger.top_balances(state.ledger, 5)) do
+    if runtime_state.player_in_force(row.player_id, force_name) then
+      balance_rows[#balance_rows + 1] = row
+    end
+  end
   if #balance_rows == 0 then
-    balance_content.add({type = "label", style = "caption_label", caption = "No player balances yet."})
+    balance_content.add({type = "label", style = "caption_label", caption = localised("no-balances")})
   else
     local balance_table = balance_content.add({type = "table", column_count = 2})
     balance_table.style.horizontally_stretchable = true
-    add_two_column_header(balance_table, "Player", "Balance")
+    add_two_column_header(balance_table, localised("player"), localised("balance"))
     for _, row in ipairs(balance_rows) do
       balance_table.add({type = "label", caption = runtime_state.player_name(row.player_id)})
-      balance_table.add({type = "label", caption = format.money(row.balance)})
+      balance_table.add({type = "label", caption = format.localised_money(row.balance)})
     end
   end
 
@@ -518,31 +545,35 @@ local function refresh_economy_tab(player)
   lower_row.style.horizontally_stretchable = true
   lower_row.style.horizontal_spacing = 12
 
-  local _, earners_content = add_section(lower_row, "Top earners")
-  local earners = metrics.top_recipients(state.metrics, second, 5)
+  local _, earners_content = add_section(lower_row, localised("top-earners"))
+  local earners = metrics.top_recipients(state.metrics, second, 5, function(row)
+    return runtime_state.player_in_force(row.player_id, force_name)
+  end)
   if #earners == 0 then
-    earners_content.add({type = "label", style = "caption_label", caption = "No trade payouts recorded yet."})
+    earners_content.add({type = "label", style = "caption_label", caption = localised("no-trade-payouts")})
   else
     local earners_table = earners_content.add({type = "table", column_count = 2})
     earners_table.style.horizontally_stretchable = true
-    add_two_column_header(earners_table, "Player", "Income")
+    add_two_column_header(earners_table, localised("player"), localised("income"))
     for _, row in ipairs(earners) do
       earners_table.add({type = "label", caption = runtime_state.player_name(row.player_id)})
-      earners_table.add({type = "label", caption = format.money(row.amount)})
+      earners_table.add({type = "label", caption = format.localised_money(row.amount)})
     end
   end
 
-  local _, payers_content = add_section(lower_row, "Top spenders")
-  local payers = metrics.top_payers(state.metrics, second, 5)
+  local _, payers_content = add_section(lower_row, localised("top-spenders"))
+  local payers = metrics.top_payers(state.metrics, second, 5, function(row)
+    return runtime_state.player_in_force(row.player_id, force_name)
+  end)
   if #payers == 0 then
-    payers_content.add({type = "label", style = "caption_label", caption = "No buy-side spend yet."})
+    payers_content.add({type = "label", style = "caption_label", caption = localised("no-buy-side-spend")})
   else
     local payers_table = payers_content.add({type = "table", column_count = 2})
     payers_table.style.horizontally_stretchable = true
-    add_two_column_header(payers_table, "Player", "Spent")
+    add_two_column_header(payers_table, localised("player"), localised("spent"))
     for _, row in ipairs(payers) do
       payers_table.add({type = "label", caption = runtime_state.player_name(row.player_id)})
-      payers_table.add({type = "label", caption = format.money(row.amount)})
+      payers_table.add({type = "label", caption = format.localised_money(row.amount)})
     end
   end
 end
@@ -564,22 +595,22 @@ local function refresh_admin_tab(player)
   local notes = notes_frame.add({type = "flow", direction = "vertical"})
   notes.style.horizontally_stretchable = true
   notes.style.vertical_spacing = 4
-  notes.add({type = "label", style = "heading_2_label", caption = "Admin diagnostics"})
+  notes.add({type = "label", style = "heading_2_label", caption = localised("admin-diagnostics")})
   notes.add({
     type = "label",
     style = "caption_label",
-    caption = "Chart-tag visibility is a force-wide Factorio surface, so it cannot be overridden per player.",
+    caption = localised("chart-tag-scope-note"),
   })
   notes.add({
     type = "label",
     style = "caption_label",
-    caption = "Use the slash commands as quick admin access, or read the live reports below.",
+    caption = localised("admin-commands-note"),
   })
 
-  local _, status_content = add_section(container, "Economy status")
+  local _, status_content = add_section(container, localised("economy-status"))
   local status_box = status_content.add({
     type = "text-box",
-    text = commands_runtime.render_trade_status(),
+    text = commands_runtime.render_trade_status(player_force_name(player)),
     read_only = true,
   })
   status_box.style.horizontally_stretchable = true
@@ -589,19 +620,19 @@ local function refresh_admin_tab(player)
   lower_row.style.horizontally_stretchable = true
   lower_row.style.horizontal_spacing = 12
 
-  local _, orders_content = add_section(lower_row, "Order snapshot")
+  local _, orders_content = add_section(lower_row, localised("order-snapshot"))
   local orders_box = orders_content.add({
     type = "text-box",
-    text = commands_runtime.render_trade_orders(),
+    text = commands_runtime.render_trade_orders(player_force_name(player)),
     read_only = true,
   })
   orders_box.style.horizontally_stretchable = true
   orders_box.style.minimal_height = 180
 
-  local _, contracts_content = add_section(lower_row, "Contract snapshot")
+  local _, contracts_content = add_section(lower_row, localised("contract-snapshot"))
   local contracts_box = contracts_content.add({
     type = "text-box",
-    text = commands_runtime.render_trade_contracts(),
+    text = commands_runtime.render_trade_contracts(player_force_name(player)),
     read_only = true,
   })
   contracts_box.style.horizontally_stretchable = true
@@ -611,12 +642,12 @@ end
 local function build_market_tab(player, container)
   local toolbar = container.add({type = "frame", style = "subheader_frame"})
   toolbar.style.horizontally_stretchable = true
-  toolbar.add({type = "label", style = "subheader_caption_label", caption = "Buy orders"})
+  toolbar.add({type = "label", style = "subheader_caption_label", caption = localised("buy-orders")})
   add_horizontal_pusher(toolbar)
-  toolbar.add({type = "label", style = "caption_label", caption = "Filter"})
+  toolbar.add({type = "label", style = "caption_label", caption = localised("filter")})
   local filter_field = toolbar.add({type = "textfield", name = constants.gui.market_filter, text = ui_state(player.index).market_filter or ""})
   filter_field.style.minimal_width = 220
-  toolbar.add({type = "label", name = constants.gui.market_results, style = "caption_label", caption = "0 listings"})
+  toolbar.add({type = "label", name = constants.gui.market_results, style = "caption_label", caption = localised("listings-count", 0)})
 
   local list_frame = container.add({type = "frame", style = "inside_shallow_frame", direction = "vertical"})
   list_frame.style.horizontally_stretchable = true
@@ -644,9 +675,9 @@ local function build_contracts_tab(player, container)
   list_frame.style.vertically_stretchable = true
   local list_header = list_frame.add({type = "frame", style = "subheader_frame"})
   list_header.style.horizontally_stretchable = true
-  list_header.add({type = "label", style = "subheader_caption_label", caption = "Contracts"})
+  list_header.add({type = "label", style = "subheader_caption_label", caption = localised("contracts")})
   add_horizontal_pusher(list_header)
-  list_header.add({type = "label", name = constants.gui.contract_count, style = "caption_label", caption = "0 open"})
+  list_header.add({type = "label", name = constants.gui.contract_count, style = "caption_label", caption = localised("contracts-open-count", 0)})
 
   local contract_list = list_frame.add({type = "list-box", name = constants.gui.contract_list, style = "wide_list_box_under_subheader"})
   contract_list.style.minimal_height = 470
@@ -658,17 +689,17 @@ local function build_contracts_tab(player, container)
   right.style.vertical_spacing = 12
   local contract_feedback = right.add({type = "label", name = constants.gui.contract_feedback, style = "caption_label", caption = ""})
   contract_feedback.visible = false
-  local _, create_content = add_section(right, "Create contract")
+  local _, create_content = add_section(right, localised("create-contract"))
 
   local title_row = create_content.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
   title_row.style.horizontally_stretchable = true
-  title_row.add({type = "label", style = "caption_label", caption = "Title"})
+  title_row.add({type = "label", style = "caption_label", caption = localised("title")})
   local title_field = title_row.add({type = "textfield", name = constants.gui.contract_title, text = ui_state(player.index).contract_title or ""})
   title_field.style.horizontally_stretchable = true
 
   local amount_row = create_content.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
   amount_row.style.horizontally_stretchable = true
-  amount_row.add({type = "label", style = "caption_label", caption = "Reward"})
+  amount_row.add({type = "label", style = "caption_label", caption = localised("reward")})
   amount_row.add({
     type = "textfield",
     name = constants.gui.contract_amount,
@@ -679,7 +710,7 @@ local function build_contracts_tab(player, container)
     allow_negative = false,
   })
 
-  create_content.add({type = "label", style = "caption_label", caption = "Briefing"})
+  create_content.add({type = "label", style = "caption_label", caption = localised("briefing")})
   local description = create_content.add({type = "text-box", name = constants.gui.contract_description, text = ui_state(player.index).contract_description or ""})
   description.style.minimal_height = 110
   description.style.horizontally_stretchable = true
@@ -687,9 +718,9 @@ local function build_contracts_tab(player, container)
   local create_buttons = create_content.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
   create_buttons.style.horizontally_stretchable = true
   add_horizontal_pusher(create_buttons)
-  create_buttons.add({type = "button", name = constants.gui.contract_create, caption = "Create contract"})
+  create_buttons.add({type = "button", name = constants.gui.contract_create, caption = localised("create-contract")})
 
-  add_section(right, "Selected contract", constants.gui.selected_contract)
+  add_section(right, localised("selected-contract"), constants.gui.selected_contract)
 end
 
 function gui.refresh_main(player)
@@ -720,13 +751,13 @@ function gui.open_main(player)
   frame.auto_center = true
   frame.style.minimal_width = 980
   frame.style.maximal_height = math.floor((player.display_resolution.height / player.display_scale) * 0.84)
-  add_window_titlebar(frame, "Trade market")
+  add_window_titlebar(frame, localised("trade-market"))
 
   local body = frame.add({type = "frame", style = "inside_deep_frame", direction = "vertical"})
   body.style.horizontally_stretchable = true
   local tabs = body.add({type = "tabbed-pane", name = constants.gui.main_tabs, style = "tabbed_pane_with_no_side_padding"})
 
-  local market_tab = tabs.add({type = "tab", caption = "Market"})
+  local market_tab = tabs.add({type = "tab", caption = localised("market")})
   local market_content = tabs.add({type = "flow", name = constants.gui.market_tab, direction = "vertical"})
   market_content.style.horizontally_stretchable = true
   market_content.style.vertical_spacing = 12
@@ -737,7 +768,7 @@ function gui.open_main(player)
   tabs.add_tab(market_tab, market_content)
   build_market_tab(player, market_content)
 
-  local contracts_tab = tabs.add({type = "tab", caption = "Contracts"})
+  local contracts_tab = tabs.add({type = "tab", caption = localised("contracts")})
   local contracts_content = tabs.add({type = "flow", name = constants.gui.contracts_tab, direction = "vertical"})
   contracts_content.style.horizontally_stretchable = true
   contracts_content.style.vertical_spacing = 12
@@ -748,7 +779,7 @@ function gui.open_main(player)
   tabs.add_tab(contracts_tab, contracts_content)
   build_contracts_tab(player, contracts_content)
 
-  local economy_tab = tabs.add({type = "tab", caption = "Economy"})
+  local economy_tab = tabs.add({type = "tab", caption = localised("economy")})
   local economy_content = tabs.add({type = "flow", name = constants.gui.economy_tab, direction = "vertical"})
   economy_content.style.horizontally_stretchable = true
   economy_content.style.vertical_spacing = 12
@@ -759,7 +790,7 @@ function gui.open_main(player)
   tabs.add_tab(economy_tab, economy_content)
 
   if player.admin then
-    local admin_tab = tabs.add({type = "tab", caption = "Admin"})
+    local admin_tab = tabs.add({type = "tab", caption = localised("admin")})
     local admin_content = tabs.add({type = "flow", name = constants.gui.admin_tab, direction = "vertical"})
     admin_content.style.horizontally_stretchable = true
     admin_content.style.vertical_spacing = 12
@@ -796,7 +827,7 @@ function gui.show_trade_box_panel(player, entity)
     type = "frame",
     name = constants.gui.trade_box_root,
     direction = "vertical",
-    caption = "Trade order",
+    caption = localised("trade-order"),
     anchor = {
       gui = defines.relative_gui_type.container_gui,
       position = defines.relative_gui_position.right,
@@ -809,7 +840,7 @@ function gui.show_trade_box_panel(player, entity)
   body.style.horizontally_stretchable = true
   local header = body.add({type = "frame", style = "subheader_frame"})
   header.style.horizontally_stretchable = true
-  header.add({type = "label", style = "subheader_caption_label", caption = "Buy request"})
+  header.add({type = "label", style = "subheader_caption_label", caption = localised("buy-request")})
   add_horizontal_pusher(header)
   header.add({type = "label", style = "caption_label", caption = format.position(entity)})
 
@@ -828,7 +859,7 @@ function gui.show_trade_box_panel(player, entity)
   item_picker.elem_value = order and order.item_name or nil
 
   local price_row = selector_row.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
-  price_row.add({type = "label", style = "caption_label", caption = "Price"})
+  price_row.add({type = "label", style = "caption_label", caption = localised("price")})
   price_row.add({
     type = "textfield",
     name = constants.gui.buy_order_price,
@@ -839,24 +870,24 @@ function gui.show_trade_box_panel(player, entity)
     allow_negative = false,
   })
 
-  selector_row.add({type = "button", name = constants.gui.buy_order_fill_suggested, caption = "Use suggested"})
-  content.add({type = "label", name = TRADE_BOX_SUGGESTED, style = "caption_label", caption = "Suggested price: n/a"})
-  content.add({type = "label", name = TRADE_BOX_STATUS, caption = "Status: No active order"})
-  content.add({type = "label", name = TRADE_BOX_STORED, style = "caption_label", caption = "Stored in box: 0"})
-  content.add({type = "label", name = TRADE_BOX_LAST_TRADE, style = "caption_label", caption = "Last trade: Never"})
-  content.add({type = "label", name = TRADE_BOX_TOTAL, style = "caption_label", caption = "Lifetime traded: 0 gold"})
+  selector_row.add({type = "button", name = constants.gui.buy_order_fill_suggested, caption = localised("use-suggested")})
+  content.add({type = "label", name = TRADE_BOX_SUGGESTED, style = "caption_label", caption = localised("suggested-price-na")})
+  content.add({type = "label", name = TRADE_BOX_STATUS, caption = localised("status-label", localised("no-active-order"))})
+  content.add({type = "label", name = TRADE_BOX_STORED, style = "caption_label", caption = localised("stored-count", 0)})
+  content.add({type = "label", name = TRADE_BOX_LAST_TRADE, style = "caption_label", caption = localised("last-trade-label", localised("never"))})
+  content.add({type = "label", name = TRADE_BOX_TOTAL, style = "caption_label", caption = localised("lifetime-traded", format.localised_money(0))})
 
   local primary_buttons = content.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
   primary_buttons.style.horizontally_stretchable = true
-  primary_buttons.add({type = "button", name = constants.gui.buy_order_cancel, caption = "Close"})
+  primary_buttons.add({type = "button", name = constants.gui.buy_order_cancel, caption = localised("close")})
   add_horizontal_pusher(primary_buttons)
-  primary_buttons.add({type = "button", name = constants.gui.buy_order_save, caption = "Save order"})
+  primary_buttons.add({type = "button", name = constants.gui.buy_order_save, caption = localised("save-order")})
 
   local secondary_buttons = content.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
   secondary_buttons.style.horizontally_stretchable = true
-  secondary_buttons.add({type = "button", name = constants.gui.buy_order_delete, caption = "Delete order"})
+  secondary_buttons.add({type = "button", name = constants.gui.buy_order_delete, caption = localised("delete-order")})
   add_horizontal_pusher(secondary_buttons)
-  secondary_buttons.add({type = "button", name = constants.gui.buy_order_toggle, caption = "Pause order"})
+  secondary_buttons.add({type = "button", name = constants.gui.buy_order_toggle, caption = localised("pause-order")})
 
   trade.note_trade_box_context(player.index, entity)
   refresh_trade_box_panel(player)
@@ -878,7 +909,7 @@ function gui.show_selected_inserter(player)
     type = "frame",
     name = constants.gui.inserter_panel,
     direction = "vertical",
-    caption = "Trade stats",
+    caption = localised("trade-stats"),
     anchor = {
       gui = defines.relative_gui_type.additional_entity_info_gui,
       position = defines.relative_gui_position.right,
@@ -891,7 +922,7 @@ function gui.show_selected_inserter(player)
   body.style.horizontally_stretchable = true
   local header = body.add({type = "frame", style = "subheader_frame"})
   header.style.horizontally_stretchable = true
-  header.add({type = "label", style = "subheader_caption_label", caption = "Inserter"})
+  header.add({type = "label", style = "subheader_caption_label", caption = localised("inserter")})
   add_horizontal_pusher(header)
   header.add({type = "label", style = "caption_label", caption = format.position(selected)})
 
@@ -937,7 +968,7 @@ function gui.handle_click(event)
   if name == constants.gui.buy_order_save then
     local box_record = current_box_record(player)
     if not box_record then
-      set_feedback(player, "trade_box_feedback", "error", "No active trade box is selected.")
+      set_feedback(player, "trade_box_feedback", "error", localised("trade-box-feedback-no-selection"))
       return
     end
 
@@ -945,7 +976,7 @@ function gui.handle_click(event)
     local item_name = find_descendant(frame, constants.gui.buy_order_item).elem_value
     local unit_price = parse_numeric_text(find_descendant(frame, constants.gui.buy_order_price).text)
     if not item_name or not unit_price then
-      set_feedback(player, "trade_box_feedback", "error", "Select an item and enter a positive integer price.")
+      set_feedback(player, "trade_box_feedback", "error", localised("trade-box-feedback-invalid"))
       refresh_trade_box_panel(player)
       return
     end
@@ -963,12 +994,13 @@ function gui.handle_click(event)
       local created = orders.create_order(state.orders, {
         box_id = box_record.box_id,
         buyer_id = player.index,
+        force_name = player_force_name(player),
         item_name = item_name,
         unit_price = unit_price,
         tick = game.tick,
       })
       if not created.ok then
-        set_feedback(player, "trade_box_feedback", "error", "This trade box already has an active order.")
+        set_feedback(player, "trade_box_feedback", "error", localised("trade-box-feedback-existing"))
         refresh_trade_box_panel(player)
         return
       end
@@ -977,7 +1009,7 @@ function gui.handle_click(event)
     entities.sync_box_filters(box_record.box_id)
     box_record.tracked_item_count = entities.box_inventory(box_record.entity).get_item_count(item_name)
     entities.refresh_tags_for_box(box_record.box_id)
-    set_feedback(player, "trade_box_feedback", "success", "Trade order saved.")
+    set_feedback(player, "trade_box_feedback", "success", localised("trade-box-feedback-saved"))
     refresh_trade_box_panel(player)
     gui.refresh_main(player)
     return
@@ -993,7 +1025,7 @@ function gui.handle_click(event)
       local new_status = order.status == "active" and "paused" or "active"
       orders.set_status(root().orders, order.id, new_status, game.tick)
       entities.refresh_tags_for_box(box_record.box_id)
-      set_feedback(player, "trade_box_feedback", "success", "Trade order " .. humanize_status(new_status) .. ".")
+      set_feedback(player, "trade_box_feedback", "success", localised("trade-box-feedback-status", localised_status(new_status)))
       refresh_trade_box_panel(player)
       gui.refresh_main(player)
     end
@@ -1011,7 +1043,7 @@ function gui.handle_click(event)
       entities.sync_box_filters(box_record.box_id)
       entities.refresh_tags_for_box(box_record.box_id)
       box_record.tracked_item_count = 0
-      set_feedback(player, "trade_box_feedback", "success", "Trade order deleted.")
+      set_feedback(player, "trade_box_feedback", "success", localised("trade-box-feedback-deleted"))
       refresh_trade_box_panel(player)
       gui.refresh_main(player)
     end
@@ -1022,13 +1054,14 @@ function gui.handle_click(event)
     local ui = ui_state(player.index)
     local amount = parse_numeric_text(ui.contract_amount)
     if ui.contract_title == "" or ui.contract_description == "" or not amount then
-      set_feedback(player, "contract_feedback", "error", "Title, briefing, and a positive integer reward are required.")
+      set_feedback(player, "contract_feedback", "error", localised("contract-feedback-invalid"))
       gui.refresh_main(player)
       return
     end
 
     contracts.create_contract(root().contracts, {
       creator_id = player.index,
+      force_name = player_force_name(player),
       title = ui.contract_title,
       description = ui.contract_description,
       amount = amount,
@@ -1039,7 +1072,7 @@ function gui.handle_click(event)
     ui.contract_description = ""
     ui.contract_amount = ""
     ui.selected_contract_id = nil
-    set_feedback(player, "contract_feedback", "success", "Contract created.")
+    set_feedback(player, "contract_feedback", "success", localised("contract-feedback-created"))
     gui.refresh_main(player)
     return
   end
@@ -1050,33 +1083,33 @@ function gui.handle_click(event)
   end
 
   if name == constants.gui.contract_assign then
-    local result = contracts.assign_self(root().contracts, selected_contract_id, player.index, game.tick)
+    local result = contracts.assign_self(root().contracts, selected_contract_id, player.index, game.tick, player_force_name(player))
     if not result.ok then
-      set_feedback(player, "contract_feedback", "error", "Assign failed: " .. humanize_status(result.error) .. ".")
+      set_feedback(player, "contract_feedback", "error", localised("contract-feedback-assign-failed", localised_error(result.error)))
     else
-      set_feedback(player, "contract_feedback", "success", "Contract assigned to you.")
+      set_feedback(player, "contract_feedback", "success", localised("contract-feedback-assigned"))
     end
     gui.refresh_main(player)
     return
   end
 
   if name == constants.gui.contract_unassign then
-    local result = contracts.unassign_self(root().contracts, selected_contract_id, player.index, game.tick)
+    local result = contracts.unassign_self(root().contracts, selected_contract_id, player.index, game.tick, player_force_name(player))
     if not result.ok then
-      set_feedback(player, "contract_feedback", "error", "Unassign failed: " .. humanize_status(result.error) .. ".")
+      set_feedback(player, "contract_feedback", "error", localised("contract-feedback-unassign-failed", localised_error(result.error)))
     else
-      set_feedback(player, "contract_feedback", "success", "Contract unassigned.")
+      set_feedback(player, "contract_feedback", "success", localised("contract-feedback-unassigned"))
     end
     gui.refresh_main(player)
     return
   end
 
   if name == constants.gui.contract_pay then
-    local result = contracts.payout(root().contracts, root().ledger, selected_contract_id, player.index, game.tick)
+    local result = contracts.payout(root().contracts, root().ledger, selected_contract_id, player.index, game.tick, player_force_name(player))
     if not result.ok then
-      set_feedback(player, "contract_feedback", "error", "Payout failed: " .. humanize_status(result.error) .. ".")
+      set_feedback(player, "contract_feedback", "error", localised("contract-feedback-payout-failed", localised_error(result.error)))
     else
-      set_feedback(player, "contract_feedback", "success", "Assignee paid successfully.")
+      set_feedback(player, "contract_feedback", "success", localised("contract-feedback-paid"))
     end
     gui.refresh_main(player)
   end
