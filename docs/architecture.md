@@ -57,6 +57,23 @@ storage.trade_mode = {
 }
 ```
 
+Order and contract records persist explicit wallet routing fields:
+
+- `order.buyer_wallet_id` (defaults to buyer player id for legacy data).
+- `order.last_trade_unit_price` for the unit price actually used on the most recent settlement (supports locked inserter settlement price).
+- `contract.creator_wallet_id`.
+- `contract.assignee_wallet_id` once assigned.
+
+Tracked inserter runtime records also persist:
+
+- `inserter.min_unit_price` (supplier floor price, required for automated selling).
+- `inserter.pending_unit_price` (locked pickup price for in-flight settlement).
+
+Wallet ids are either:
+
+- `force:<force-name>` for team-shared force wallets.
+- Numeric player ids as a compatibility fallback for synthetic/legacy contexts.
+
 ## Test Harness Entry Points
 
 - Pure/unit runner: `npm run test:lua` statically validates the pure/runtime Lua modules, and `scenarios/trade-tests/control.lua` runs the pure Lua assertions inside Factorio on init.

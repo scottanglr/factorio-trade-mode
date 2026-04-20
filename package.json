@@ -4,7 +4,7 @@
   "scripts": {
     "generate:suggested-prices": "tsx scripts/generate-suggested-prices.ts",
     "build:mod": "node scripts/build-mod.mjs",
-    "test:lua": "node scripts/validate-lua.mjs",
+    "test:lua": "node scripts/validate-lua.mjs && node scripts/validate-factorio-api.mjs",
     "test:factorio": "node scripts/run-tests.mjs",
     "test": "npm run test:lua && npm run test:factorio"
   },

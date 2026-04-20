@@ -8,10 +8,14 @@ This document captures the official API/runtime references used for every Factor
 - Runtime bootstrap and nth-tick handlers: [LuaBootstrap](https://lua-api.factorio.com/latest/classes/LuaBootstrap.html)
 - Entity APIs for inventories, inserters, ownership, and identity: [LuaEntity](https://lua-api.factorio.com/latest/classes/LuaEntity.html)
 - Player GUI state: [LuaPlayer](https://lua-api.factorio.com/latest/classes/LuaPlayer.html)
+- Force-wide messaging and map/chart scope: [LuaForce](https://lua-api.factorio.com/latest/classes/LuaForce.html)
 - GUI construction: [LuaGuiElement](https://lua-api.factorio.com/latest/classes/LuaGuiElement.html)
 - Commands: [LuaCommandProcessor](https://lua-api.factorio.com/latest/classes/LuaCommandProcessor.html)
 - Production statistics: [LuaForce](https://lua-api.factorio.com/latest/classes/LuaForce.html) and [LuaFlowStatistics](https://lua-api.factorio.com/latest/classes/LuaFlowStatistics.html)
 - Inventory mutation/filtering: [LuaInventory](https://lua-api.factorio.com/latest/classes/LuaInventory.html)
+- Recipe timing baseline: [RecipePrototype::energy_required](https://lua-api.factorio.com/latest/prototypes/RecipePrototype.html)
+- Machine energy semantics: [CraftingMachinePrototype](https://lua-api.factorio.com/latest/prototypes/CraftingMachinePrototype.html)
+- Fuel value semantics: [ItemPrototype::fuel_value](https://lua-api.factorio.com/latest/prototypes/ItemPrototype.html) and [Energy type](https://lua-api.factorio.com/latest/types/Energy.html)
 - Shortcut prototypes: [ShortcutPrototype](https://lua-api.factorio.com/latest/prototypes/ShortcutPrototype.html)
 - Persistent storage guidance: [Storage](https://lua-api.factorio.com/latest/auxiliary/storage.html)
 - Mod file layout guidance: [Mod Structure](https://lua-api.factorio.com/latest/auxiliary/mod-structure.html)
@@ -23,6 +27,8 @@ This document captures the official API/runtime references used for every Factor
 
 - `script.on_init`, `script.on_load`, `script.on_configuration_changed`, `script.on_event`, and `script.on_nth_tick` come from `LuaBootstrap`.
 - `on_nth_tick` is the documented way to run deterministic periodic reconciliation and metric sampling.
+- `on_player_changed_force` is used to refresh tracked player metadata after team changes.
+- `on_forces_merged` is used to merge source-force wallet balances into destination-force wallets after force merges.
 
 ### Box/inserter/entity integration
 
@@ -62,7 +68,13 @@ Factorio does not expose a single pre-insert chest event that gives both exact q
 
 - `LuaForce::get_item_production_statistics(surface)` returns `LuaFlowStatistics` for a force/surface pair.
 - `LuaFlowStatistics::get_output_count(name)` and `get_input_count(name)` are used to derive recent ore throughput for `iron-ore`, `copper-ore`, `coal`, `stone`, and `uranium-ore`.
+- In the item production GUI, `output` corresponds to item consumption rather than mined production, so this should be described as ore throughput/consumption unless the implementation is changed to use a different signal.
 - `commands.add_command` from `LuaCommandProcessor` is used for admin slash commands.
+
+### Team wallet and notification messaging
+
+- `LuaForce::print()` is the documented force-wide print path and `LuaPlayer::print()` is the documented per-player chat path.
+- The notification layer uses `LuaPlayer::print()` to target contract creators/order owners without broadcasting to unrelated players.
 
 ### Persistence and schema
 
@@ -79,7 +91,33 @@ Factorio does not expose a single pre-insert chest event that gives both exact q
 ### Automated trade blocking
 
 - The documented `LuaEntity::disabled_by_script` inserter control plus `held_stack` / `pickup_target` / `drop_target` support lets the adapter prevent unaffordable automated deliveries before the item settles into the trade box in the normal case.
+- `LuaEntity::inserter_stack_size_override` is used as a conservative `1`-item cap while automated trading is enabled, so the runtime can avoid large in-flight overshoot and keep settlement deterministic.
+
+### Price tamper protection (inserter floor + in-flight lock)
+
+- `LuaEntity::held_stack` is sampled to detect an in-flight inserter delivery and lock a per-delivery unit price before settlement.
+- `LuaEntity::disabled_by_script` is used to block new inserter deliveries when order price is below supplier-configured inserter minimum.
+- `on_gui_text_changed` + `on_gui_click` with a `textfield` and button are used to configure inserter minimum acceptable price from the selected-inserter side panel.
+
+Inference:
+Factorio does not expose a dedicated "item picked up by inserter" event with immutable per-stack metadata. The adapter therefore locks delivery price from repeated `held_stack` observation and preserves that locked value until settlement/refund.
+
+### Suggested-price energy model
+
+- `RecipePrototype::energy_required` is explicitly documented as crafting time at crafting speed `1`, so it is safe to treat it as deterministic per-recipe time input.
+- Suggested pricing now derives a recipe energy surcharge from coal value (`coal_price / coal_energy_units`) and applies it to recipe craft time.
 
 ### Manual trade failure handling
 
 - Because manual insert events fire after the interaction, insufficient-funds handling removes the inserted item immediately and returns it to the player inventory when possible, with spill fallback only if the return insert cannot fit.
+
+## Checklist: Price Lock + Inserter Minimum Price
+
+- [x] `LuaEntity::held_stack` used to capture and preserve in-flight delivery unit price.
+- [x] `LuaEntity::disabled_by_script` used to block new deliveries when order price is below inserter minimum.
+- [x] `LuaEntity::inserter_stack_size_override` used in documented reset-safe mode (`0` reset, `1` cap while enabled).
+- [x] GUI edits use documented events and element types (`textfield` + `on_gui_text_changed`, button + `on_gui_click`).
+- [x] Integration tests cover:
+  - locked in-flight price settlement despite later order price edits,
+  - below-floor rejection for future inserter deliveries,
+  - pre-existing automated and overflow paths under the new floor requirement.

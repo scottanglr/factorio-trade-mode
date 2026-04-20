@@ -38,6 +38,15 @@ local function snapshot()
   return remote_call("state_snapshot")
 end
 
+local function find_order_row(rows, box_id)
+  for _, row in ipairs(rows) do
+    if row.box_id == box_id then
+      return row
+    end
+  end
+  return nil
+end
+
 local function clear_area(area)
   for _, entity in pairs(surface().find_entities_filtered({area = area})) do
     if entity.valid and entity.type ~= "character" and entity.force.name ~= "enemy" and entity.force.name ~= "neutral" then
@@ -76,7 +85,7 @@ local function create_container(name, position)
   return entity
 end
 
-local function create_burner_inserter(position, direction, owner_player_index)
+local function create_burner_inserter(position, direction, owner_player_index, min_unit_price)
   local entity = surface().create_entity({
     name = "burner-inserter",
     position = position,
@@ -87,7 +96,26 @@ local function create_burner_inserter(position, direction, owner_player_index)
   raise_built(entity)
   entity.get_fuel_inventory().insert({name = "coal", count = 10})
   local bind_result = remote_call("test_set_inserter_owner", entity.unit_number, owner_player_index)
-  return entity, bind_result
+  local min_result = nil
+  if min_unit_price ~= nil then
+    min_result = remote_call("test_set_inserter_min_price", entity.unit_number, min_unit_price)
+  end
+  return entity, bind_result, min_result
+end
+
+local function run_ui_open_case()
+  local result = remote_call("test_toggle_main_ui", 1)
+  add_result(
+    "Scenario I: Main UI opens and closes without runtime errors",
+    result.ok == true,
+    "Opening the main trade UI creates the expected root widgets and closing it removes them again.",
+    {
+      "Invoke the same toggle logic used by the shortcut for player 1.",
+      "Verify the main frame and tabbed pane are created.",
+      "Toggle again and verify the window closes cleanly.",
+    },
+    result
+  )
 end
 
 local function run_manual_trade_case()
@@ -207,7 +235,7 @@ local function setup_automated_trade_case(case_name, area_origin_x, buyer_id, bu
 
   local source = create_container("steel-chest", {area_origin_x, 0})
   local box = create_trade_box({area_origin_x + 2, 0})
-  local inserter, bind_result = create_burner_inserter({area_origin_x + 1, 0}, defines.direction.west, synthetic_seller_id)
+  local inserter, bind_result, min_result = create_burner_inserter({area_origin_x + 1, 0}, defines.direction.west, synthetic_seller_id, 1)
   source.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = expected_box_count})
   local box_id = util.id_key(box.unit_number)
   local created = remote_call("create_order", box.unit_number, buyer_id, "iron-ore", 10)
@@ -225,6 +253,8 @@ local function setup_automated_trade_case(case_name, area_origin_x, buyer_id, bu
     created_box_id = created.order and created.order.box_id or "missing",
     owner_bind_ok = bind_result.ok,
     owner_bind_error = bind_result.error,
+    min_price_set_ok = min_result and min_result.ok or false,
+    min_price_set_error = min_result and min_result.error or "missing",
   }
 end
 
@@ -274,6 +304,8 @@ local function check_automated_trade_case()
       created_box_id = checkpoint.created_box_id,
       owner_bind_ok = checkpoint.owner_bind_ok,
       owner_bind_error = checkpoint.owner_bind_error,
+      min_price_set_ok = checkpoint.min_price_set_ok,
+      min_price_set_error = checkpoint.min_price_set_error,
       tracked_trade_boxes = after.tracked_trade_boxes,
       tracked_inserters = after.tracked_inserters,
       order_found = live_order ~= nil,
@@ -286,10 +318,10 @@ local function check_automated_trade_case()
   local money_report = after.reports.trade_money_last_minute
   add_result(
     "Admin command reports reflect last-minute trade metrics",
-    string.find(status_report, "money_traded_last_minute: 130", 1, true) ~= nil and string.find(money_report, "value: 130", 1, true) ~= nil,
-    "trade_status and trade_money_last_minute both report 130 after the manual, overflow, and automated trade scenarios.",
+    string.find(status_report, "money_traded_last_minute: 180", 1, true) ~= nil and string.find(money_report, "value: 180", 1, true) ~= nil,
+    "trade_status and trade_money_last_minute both report 180 after the manual, overflow, team-wallet, and automated trade scenarios.",
     {
-      "Run the manual, overflow, and automated trade scenarios first.",
+      "Run the manual, overflow, team-wallet, and automated trade scenarios first.",
       "Read the same formatted report strings used by the slash commands.",
     },
     {
@@ -342,6 +374,8 @@ local function check_insufficient_funds_case()
       created_box_id = checkpoint.created_box_id,
       owner_bind_ok = checkpoint.owner_bind_ok,
       owner_bind_error = checkpoint.owner_bind_error,
+      min_price_set_ok = checkpoint.min_price_set_ok,
+      min_price_set_error = checkpoint.min_price_set_error,
       tracked_trade_boxes = after.tracked_trade_boxes,
       tracked_inserters = after.tracked_inserters,
       order_found = live_order ~= nil,
@@ -362,7 +396,7 @@ local function setup_automated_overflow_case()
 
   local source = create_container("steel-chest", {36, 0})
   local box = create_trade_box({38, 0})
-  local inserter, bind_result = create_burner_inserter({37, 0}, defines.direction.west, synthetic_inserter_overflow_seller_id)
+  local inserter, bind_result, min_result = create_burner_inserter({37, 0}, defines.direction.west, synthetic_inserter_overflow_seller_id, 1)
   source.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = 3})
   local box_id = util.id_key(box.unit_number)
   local created = remote_call("create_order", box.unit_number, 24, "iron-ore", 10)
@@ -378,6 +412,8 @@ local function setup_automated_overflow_case()
     created_ok = created.ok,
     owner_bind_ok = bind_result.ok,
     owner_bind_error = bind_result.error,
+    min_price_set_ok = min_result and min_result.ok or false,
+    min_price_set_error = min_result and min_result.error or "missing",
   }
 end
 
@@ -428,6 +464,8 @@ local function check_automated_overflow_case()
       created_ok = checkpoint.created_ok,
       owner_bind_ok = checkpoint.owner_bind_ok,
       owner_bind_error = checkpoint.owner_bind_error,
+      min_price_set_ok = checkpoint.min_price_set_ok,
+      min_price_set_error = checkpoint.min_price_set_error,
       order_found = live_order ~= nil,
       order_total_traded = live_order and live_order.total_traded or 0,
       order_total_units_traded = live_order and live_order.total_units_traded or 0,
@@ -476,23 +514,27 @@ local function run_ubi_scaling_case()
 
   local low_rate = ubi.get_recent_ore_per_minute(low_state).recent_raw_ore_per_minute
   local high_rate = ubi.get_recent_ore_per_minute(high_state).recent_raw_ore_per_minute
-  local low_gold = ubi.compute_gold_per_second(constants.ubi, low_rate)
-  local high_gold = ubi.compute_gold_per_second(constants.ubi, high_rate)
+  local low_gold, low_ore_per_player, low_per_player_gold = ubi.compute_team_gold_per_second(constants.ubi, low_rate, 1)
+  local high_gold, high_ore_per_player, high_per_player_gold = ubi.compute_team_gold_per_second(constants.ubi, high_rate, 10)
 
   add_result(
-    "Scenario E: UBI scaling under low vs high ore throughput",
-    high_rate > low_rate and high_gold > low_gold,
-    "The pure UBI engine reports a higher gold_per_second at 600 ore/min than at 60 ore/min.",
+    "Scenario E: UBI scales off throughput per player",
+    high_rate > low_rate and high_ore_per_player == low_ore_per_player and math.abs(high_per_player_gold - low_per_player_gold) < 0.000001,
+    "The pure UBI engine keeps per-player gold_per_second steady when throughput and player count scale together.",
     {
-      "Feed the pure UBI module a low-throughput rolling sample window.",
-      "Feed the same module a high-throughput rolling sample window.",
-      "Compare the resulting ore/minute and gold_per_second values.",
+      "Feed the pure UBI module a low-throughput rolling sample window for one player.",
+      "Feed the same module a ten-times-higher throughput window for ten players.",
+      "Compare the resulting ore-per-player and per-player gold_per_second values.",
     },
     {
       low_rate = low_rate,
       high_rate = high_rate,
+      low_ore_per_player = low_ore_per_player,
+      high_ore_per_player = high_ore_per_player,
       low_gold = low_gold,
       high_gold = high_gold,
+      low_per_player_gold = low_per_player_gold,
+      high_per_player_gold = high_per_player_gold,
     }
   )
 end
@@ -545,6 +587,228 @@ local function run_script_destroy_cleanup_case()
   )
 end
 
+local function run_team_wallet_cross_force_trade_case()
+  clear_area({{56, -4}, {66, 4}})
+
+  remote_call("test_set_player_force", 30, "team-a")
+  remote_call("test_set_player_force", 31, "team-a")
+  remote_call("test_set_player_force", 32, "team-b")
+
+  local before = snapshot()
+  local buyer_before = before.balances["30"] or 0
+  local teammate_before = before.balances["31"] or 0
+  local seller_before = before.balances["32"] or 0
+
+  remote_call("credit_player", 30, 50)
+  remote_call("credit_player", 31, 50)
+
+  local box = create_trade_box({60, 0})
+  local box_id = util.id_key(box.unit_number)
+  local created = remote_call("create_order", box.unit_number, 30, "iron-ore", 10)
+  box.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = 5})
+  remote_call("test_note_manual_insertion", box.unit_number, 32, "iron-ore", 5)
+  remote_call("reconcile_now")
+
+  local after = snapshot()
+  local buyer_after = after.balances["30"] or 0
+  local teammate_after = after.balances["31"] or 0
+  local seller_after = after.balances["32"] or 0
+
+  local live_order = nil
+  for _, row in ipairs(after.orders) do
+    if row.box_id == box_id then
+      live_order = row
+      break
+    end
+  end
+
+  local buyer_delta = buyer_after - buyer_before
+  local teammate_delta = teammate_after - teammate_before
+  local seller_delta = seller_after - seller_before
+
+  add_result(
+    "Scenario J: Team wallet sharing and cross-team trade settlement",
+    buyer_delta == 50
+      and teammate_delta == 50
+      and seller_delta == 50
+      and (live_order and live_order.first_fill_notified == true or false),
+    "Team A's two players both reflect the same post-trade wallet (delta +50), Team B seller gains 50, and first-fill notification flag is set on the order.",
+    {
+      "Track synthetic buyer players 30 and 31 as team-a, and synthetic supplier 32 as team-b.",
+      "Credit both team-a players (which should hit one shared wallet) then create a 5 x iron-ore @ 10 order for player 30.",
+      "Insert 5 iron ore as team-b supplier and reconcile immediately.",
+    },
+    {
+      created_ok = created.ok,
+      buyer_before = buyer_before,
+      buyer_after = buyer_after,
+      teammate_before = teammate_before,
+      teammate_after = teammate_after,
+      seller_before = seller_before,
+      seller_after = seller_after,
+      buyer_delta = buyer_delta,
+      teammate_delta = teammate_delta,
+      seller_delta = seller_delta,
+      wallet_balances = after.wallet_balances,
+      order_found = live_order ~= nil,
+      first_fill_notified = live_order and live_order.first_fill_notified or false,
+      order_total_traded = live_order and live_order.total_traded or 0,
+    }
+  )
+end
+
+local function setup_price_lock_and_floor_case()
+  clear_area({{68, -4}, {78, 4}})
+
+  remote_call("credit_player", 33, 100)
+  local before = snapshot()
+  local seller_before = before.balances[tostring(synthetic_seller_id)] or 0
+
+  local source = create_container("steel-chest", {68, 0})
+  local box = create_trade_box({70, 0})
+  local inserter, bind_result, min_result = create_burner_inserter({69, 0}, defines.direction.west, synthetic_seller_id, 9)
+  source.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = 1})
+  local created = remote_call("create_order", box.unit_number, 33, "iron-ore", 10)
+
+  ensure_state().checkpoints["scenario_k"] = {
+    stage = "wait_hold",
+    started_tick = game.tick,
+    seller_before = seller_before,
+    source = source,
+    box = box,
+    box_id = util.id_key(box.unit_number),
+    inserter = inserter,
+    created_ok = created.ok,
+    owner_bind_ok = bind_result.ok,
+    owner_bind_error = bind_result.error,
+    min_price_set_ok = min_result and min_result.ok or false,
+    min_price_set_error = min_result and min_result.error or "missing",
+    first_price_update_ok = false,
+    second_price_update_ok = false,
+  }
+end
+
+local function finish_price_lock_and_floor_case(ok, details)
+  add_result(
+    "Scenario K: Inserter price lock and supplier floor-price enforcement",
+    ok,
+    "An in-flight inserter delivery settles at its locked pickup price, then a lowered order below the inserter minimum is blocked with no extra payout.",
+    {
+      "Create a burner inserter owned by seller 1 with minimum acceptable price 9.",
+      "Create a 1 x iron-ore @ 10 order, wait for the inserter to hold the stack, then lower order price to 1 before drop.",
+      "After the first settlement, lower order price to 8, feed one more ore, and verify no additional trade settles.",
+    },
+    details
+  )
+  ensure_state().checkpoints["scenario_k"] = nil
+  ensure_state().price_lock_case_done = true
+end
+
+local function check_price_lock_and_floor_case()
+  local checkpoint = ensure_state().checkpoints["scenario_k"]
+  if not checkpoint then
+    return
+  end
+
+  if checkpoint.stage == "wait_hold" then
+    if checkpoint.inserter.held_stack.valid_for_read and checkpoint.inserter.held_stack.name == "iron-ore" then
+      checkpoint.hold_detected_tick = checkpoint.hold_detected_tick or game.tick
+      if game.tick > checkpoint.hold_detected_tick then
+        local updated = remote_call("update_order_price", checkpoint.box.unit_number, 1)
+        checkpoint.first_price_update_ok = updated and updated.ok == true
+        checkpoint.stage = "wait_first_settlement"
+        checkpoint.first_due_tick = game.tick + 240
+      end
+      return
+    end
+
+    if game.tick > checkpoint.started_tick + 240 then
+      finish_price_lock_and_floor_case(false, {
+        reason = "inserter_never_held_stack",
+        created_ok = checkpoint.created_ok,
+        owner_bind_ok = checkpoint.owner_bind_ok,
+        owner_bind_error = checkpoint.owner_bind_error,
+        min_price_set_ok = checkpoint.min_price_set_ok,
+        min_price_set_error = checkpoint.min_price_set_error,
+      })
+    end
+    return
+  end
+
+  if checkpoint.stage == "wait_first_settlement" then
+    local after = snapshot()
+    local seller_after = after.balances[tostring(synthetic_seller_id)] or 0
+    local live_order = find_order_row(after.orders, checkpoint.box_id)
+    if live_order and live_order.total_units_traded >= 1 then
+      checkpoint.seller_after_first = seller_after
+      checkpoint.first_order_total_traded = live_order.total_traded or 0
+      checkpoint.first_order_units = live_order.total_units_traded or 0
+      local updated = remote_call("update_order_price", checkpoint.box.unit_number, 8)
+      checkpoint.second_price_update_ok = updated and updated.ok == true
+      checkpoint.source.get_inventory(defines.inventory.chest).insert({name = "iron-ore", count = 1})
+      checkpoint.stage = "wait_floor_block"
+      checkpoint.second_due_tick = game.tick + 240
+      return
+    end
+
+    if checkpoint.first_due_tick and game.tick > checkpoint.first_due_tick then
+      finish_price_lock_and_floor_case(false, {
+        reason = "first_delivery_did_not_settle",
+        created_ok = checkpoint.created_ok,
+        first_price_update_ok = checkpoint.first_price_update_ok,
+        first_due_tick = checkpoint.first_due_tick,
+      })
+    end
+    return
+  end
+
+  if checkpoint.stage == "wait_floor_block" and checkpoint.second_due_tick and game.tick >= checkpoint.second_due_tick then
+    local after = snapshot()
+    local seller_after = after.balances[tostring(synthetic_seller_id)] or 0
+    local buyer_after = after.balances["33"] or 0
+    local box_count = checkpoint.box.get_inventory(defines.inventory.chest).get_item_count("iron-ore")
+    local source_count = checkpoint.source.get_inventory(defines.inventory.chest).get_item_count("iron-ore")
+    local held_count = checkpoint.inserter.held_stack.valid_for_read and checkpoint.inserter.held_stack.count or 0
+    local live_order = find_order_row(after.orders, checkpoint.box_id)
+
+    local first_delta = (checkpoint.seller_after_first or checkpoint.seller_before) - checkpoint.seller_before
+    local final_delta = seller_after - checkpoint.seller_before
+    local ok =
+      checkpoint.created_ok
+      and checkpoint.owner_bind_ok
+      and checkpoint.min_price_set_ok
+      and checkpoint.first_price_update_ok
+      and checkpoint.second_price_update_ok
+      and first_delta == 10
+      and final_delta == 10
+      and buyer_after == 90
+      and box_count == 1
+      and (source_count + held_count) == 1
+      and (live_order and live_order.total_traded == 10 and live_order.total_units_traded == 1 or false)
+
+    finish_price_lock_and_floor_case(ok, {
+      created_ok = checkpoint.created_ok,
+      owner_bind_ok = checkpoint.owner_bind_ok,
+      owner_bind_error = checkpoint.owner_bind_error,
+      min_price_set_ok = checkpoint.min_price_set_ok,
+      min_price_set_error = checkpoint.min_price_set_error,
+      first_price_update_ok = checkpoint.first_price_update_ok,
+      second_price_update_ok = checkpoint.second_price_update_ok,
+      seller_before = checkpoint.seller_before,
+      seller_after_first = checkpoint.seller_after_first,
+      seller_after = seller_after,
+      buyer_after = buyer_after,
+      box_count = box_count,
+      source_count = source_count,
+      held_count = held_count,
+      order_found = live_order ~= nil,
+      order_total_traded = live_order and live_order.total_traded or 0,
+      order_total_units_traded = live_order and live_order.total_units_traded or 0,
+      tracked_inserters = after.tracked_inserters,
+    })
+  end
+end
+
 local function write_report()
   local test_state = ensure_state()
   local pure = test_state.pure_result
@@ -584,6 +848,7 @@ script.on_event(defines.events.on_tick, function(event)
   if not test_state.started and event.tick >= 10 then
     test_state.started = true
     test_state.pure_result = pure_suite.run()
+    run_ui_open_case()
     run_manual_trade_case()
     run_manual_overflow_case()
     setup_automated_trade_case("scenario_b", 10, 20, 100, 3)
@@ -591,18 +856,36 @@ script.on_event(defines.events.on_tick, function(event)
     setup_automated_overflow_case()
     run_ubi_scaling_case()
     run_script_destroy_cleanup_case()
+    run_team_wallet_cross_force_trade_case()
   end
 
   check_automated_trade_case()
   check_insufficient_funds_case()
   check_automated_overflow_case()
+  check_price_lock_and_floor_case()
 
-   if test_state.started and not test_state.contract_case_done and not test_state.checkpoints["scenario_b"] and not test_state.checkpoints["scenario_c"] and not test_state.checkpoints["scenario_g"] then
+  if
+    test_state.started and
+    not test_state.price_lock_case_started and
+    not test_state.checkpoints["scenario_b"] and
+    not test_state.checkpoints["scenario_c"] and
+    not test_state.checkpoints["scenario_g"]
+  then
+    setup_price_lock_and_floor_case()
+    test_state.price_lock_case_started = true
+  end
+
+  if
+    test_state.started and
+    not test_state.contract_case_done and
+    test_state.price_lock_case_done and
+    not test_state.checkpoints["scenario_k"]
+  then
     run_contract_case()
     test_state.contract_case_done = true
   end
 
-  if test_state.started and test_state.contract_case_done and not test_state.finished and event.tick >= 520 then
+  if test_state.started and test_state.contract_case_done and not test_state.finished and event.tick >= 620 then
     write_report()
   end
 end)

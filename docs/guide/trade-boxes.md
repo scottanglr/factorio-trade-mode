@@ -10,6 +10,7 @@ Trade boxes are the heart of the mod. Each trade box can host one live buy order
 - Filters its inventory to match the current order item.
 - Pays suppliers automatically when valid deliveries arrive.
 - Exposes a map tag for active orders when chart tags are enabled.
+- Sends a one-time notification to the order creator when the first valid supplier starts filling that order.
 
 ## Creating Or Updating An Order
 
@@ -21,6 +22,8 @@ The trade-box side panel lets you:
 - Save the order.
 
 Saving an existing order updates it in place. Saving a new order creates a new live order for that box.
+
+Suggested prices include ingredient value and a recipe-energy surcharge derived from coal value.
 
 ## Order States
 
@@ -36,6 +39,9 @@ When a player or inserter delivers the requested item into an active trade box:
 2. It checks whether the buyer can afford the full delivery.
 3. It transfers gold from the buyer to the supplier.
 4. It records trade statistics and last-trade information.
+5. If this is the first successful fill for that order, the order creator is notified and the supplier name is included.
+
+Cross-force trading is supported. Orders can be supplied by players from other teams, and settlements move money between force wallets.
 
 ## Manual Deliveries
 
@@ -51,17 +57,34 @@ If the delivery can be matched to the player who inserted the items, that player
 Automated deliveries are built around nearby inserters feeding the box.
 
 - The mod tracks inserters around the box.
+- Each inserter must have a minimum acceptable unit price configured before it will auto-sell.
 - It tries to identify which inserter supplied the incoming stack.
 - The inserter owner receives the payout when the delivery settles.
 - The inserter can also accumulate lifetime payout stats.
+
+### Inserter Supplier Floor Price
+
+Inserter minimum acceptable price is the supplier-side anti-tamper guard:
+
+- If an order price is below the inserter minimum, the inserter is script-disabled for that order.
+- The inserter can still finish an already in-flight stack if that stack was locked at a valid pickup price.
+- Clearing the inserter minimum disables auto-selling for that inserter until a minimum is set again.
 
 ## Affordability Protection
 
 The mod tries to stop automated over-delivery before it happens:
 
 - Nearby inserters are budget-limited when an order is active.
-- If the buyer cannot afford the held stack, the inserter can be disabled by script.
+- If the buyer's force wallet cannot afford the held stack, the inserter can be disabled by script.
 - If the buyer cannot afford a delivery that still arrives, the items are refunded instead of being silently consumed.
+
+## Price Locking During Delivery
+
+To prevent buyer-side mid-delivery price tampering:
+
+- Inserter deliveries lock unit price from the pickup/in-flight observation, not from the later order edit value.
+- Settlement for that delivery uses the locked unit price.
+- Order edits still apply to future deliveries.
 
 ## Refund Behavior
 

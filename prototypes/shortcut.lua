@@ -8,6 +8,7 @@ data:extend({
     associated_control_input = "trade-mode-toggle-market",
     action = "lua",
     toggleable = true,
+    hidden = true,
     style = "green",
     icons = {
       {

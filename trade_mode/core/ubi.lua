@@ -121,6 +121,17 @@ function ubi.compute_gold_per_second(config, recent_raw_ore_per_minute)
   return base_income + income_scale * (recent_raw_ore_per_minute ^ income_exponent)
 end
 
+function ubi.compute_team_gold_per_second(config, recent_raw_ore_per_minute, player_count)
+  local normalized_player_count = math.max(tonumber(player_count) or 0, 0)
+  if normalized_player_count <= 0 then
+    return 0, 0, 0
+  end
+
+  local ore_per_player_per_minute = recent_raw_ore_per_minute / normalized_player_count
+  local per_player_gold_per_second = ubi.compute_gold_per_second(config, ore_per_player_per_minute)
+  return per_player_gold_per_second * normalized_player_count, ore_per_player_per_minute, per_player_gold_per_second
+end
+
 function ubi.split_evenly(state, total_amount, player_ids)
   ensure_state(state)
   if total_amount <= 0 or #player_ids == 0 then
@@ -154,13 +165,17 @@ end
 
 function ubi.plan_distribution(state, config, recent_raw_ore_per_minute, player_ids)
   ensure_state(state)
-  local raw_gold_per_second = ubi.compute_gold_per_second(config, recent_raw_ore_per_minute)
+  local player_count = #player_ids
+  local raw_gold_per_second, ore_per_player_per_minute, per_player_gold_per_second =
+    ubi.compute_team_gold_per_second(config, recent_raw_ore_per_minute, player_count)
   state.fractional_bank = state.fractional_bank + raw_gold_per_second
   local creditable_amount = math.floor(state.fractional_bank)
   state.fractional_bank = state.fractional_bank - creditable_amount
 
   return {
     raw_gold_per_second = raw_gold_per_second,
+    ore_per_player_per_minute = ore_per_player_per_minute,
+    per_player_gold_per_second = per_player_gold_per_second,
     creditable_amount = creditable_amount,
     payouts = ubi.split_evenly(state, creditable_amount, player_ids),
   }

@@ -5,19 +5,21 @@ local economy = require("trade_mode.runtime.economy")
 local entities = require("trade_mode.runtime.entities")
 local format = require("trade_mode.runtime.format")
 local inserter_stats = require("trade_mode.core.inserter_stats")
-local ledger = require("trade_mode.core.ledger")
 local metrics = require("trade_mode.core.metrics")
+local notifications = require("trade_mode.runtime.notifications")
 local orders = require("trade_mode.core.orders")
 local pricing = require("trade_mode.core.pricing")
 local runtime_state = require("trade_mode.runtime.state")
 local util = require("trade_mode.core.util")
 local trade = require("trade_mode.runtime.trade")
+local mod_gui = require("__core__.lualib.mod-gui")
 
 local suggested_prices = require("trade_mode.suggested-prices-config")
 
 local gui = {}
 
 local MARKET_SCROLL = "trade_mode_market_scroll"
+local MARKET_SUMMARY = "trade_mode_market_summary"
 local TRADE_BOX_SUGGESTED = "trade_mode_suggested_price_label"
 local TRADE_BOX_STATUS = "trade_mode_status_label"
 local TRADE_BOX_STORED = "trade_mode_stored_count_label"
@@ -67,6 +69,9 @@ local function ui_state(player_index)
     trade_box_feedback = nil,
     contract_feedback = nil,
     selected_main_tab = 1,
+    selected_inserter_id = nil,
+    inserter_min_price = "",
+    inserter_feedback = nil,
   }
   return runtime.player_ui[player_index]
 end
@@ -80,6 +85,7 @@ end
 local function destroy_named_panel(player, name)
   destroy_if_present(player.gui.left, name)
   destroy_if_present(player.gui.relative, name)
+  destroy_if_present(player.gui.screen, name)
 end
 
 local function find_descendant(root_element, target_name)
@@ -104,6 +110,19 @@ local function clear_children(element)
   end
 end
 
+local function split_lines(text)
+  local lines = {}
+  if not text or text == "" then
+    return lines
+  end
+
+  for line in string.gmatch(text .. "\n", "(.-)\n") do
+    lines[#lines + 1] = line
+  end
+
+  return lines
+end
+
 local function parse_numeric_text(text)
   local number = tonumber(text)
   if not number or number <= 0 or number ~= math.floor(number) then
@@ -124,9 +143,11 @@ local function humanize_status(status)
 end
 
 local function item_caption(item_name)
-  local prototype = game and game.item_prototypes and game.item_prototypes[item_name]
+  local prototype = prototypes and prototypes.item and prototypes.item[item_name]
   local name = prototype and prototype.localised_name or item_name
-  return {"", "[img=item/" .. item_name .. "] ", name}
+  local sprite_path = "item/" .. item_name
+  local icon = helpers.is_valid_sprite_path(sprite_path) and ("[img=" .. sprite_path .. "] ") or ""
+  return {"", icon, name}
 end
 
 local function current_box_record(player)
@@ -151,6 +172,14 @@ end
 
 local function main_element(player, name)
   return find_descendant(main_frame(player), name)
+end
+
+local function destroy_legacy_mod_button(player)
+  local flow = mod_gui.get_button_flow(player)
+  if flow and flow.valid and flow[constants.gui.mod_button] then
+    flow[constants.gui.mod_button].destroy()
+  end
+  destroy_if_present(player.gui.relative, "trade_mode_controller_root")
 end
 
 local function main_tab_count(player)
@@ -209,6 +238,14 @@ local function add_horizontal_pusher(parent, style_name)
   return widget
 end
 
+local function player_balance(player)
+  return runtime_state.player_balance(player.index)
+end
+
+local function balance_caption(player)
+  return localised("balance-label", format.localised_money(player_balance(player)))
+end
+
 local function add_window_titlebar(frame, title)
   local titlebar = frame.add({type = "flow", direction = "horizontal"})
   titlebar.drag_target = frame
@@ -223,7 +260,26 @@ local function add_window_titlebar(frame, title)
     type = "sprite-button",
     name = "trade_mode_close_main",
     style = "frame_action_button",
-    sprite = "utility/close_white",
+    sprite = "utility/close",
+    hovered_sprite = "utility/close_black",
+    clicked_sprite = "utility/close_black",
+    tooltip = {"gui.close-instruction"},
+  })
+end
+
+local function add_panel_titlebar(frame, title, close_name)
+  local titlebar = frame.add({type = "flow", direction = "horizontal"})
+  titlebar.style.horizontal_spacing = 8
+  local title_label = titlebar.add({type = "label", style = "frame_title", caption = title})
+  title_label.ignored_by_interaction = true
+  local drag_handle = add_horizontal_pusher(titlebar, "draggable_space_header")
+  drag_handle.style.height = 24
+  drag_handle.ignored_by_interaction = true
+  titlebar.add({
+    type = "sprite-button",
+    name = close_name,
+    style = "frame_action_button",
+    sprite = "utility/close",
     hovered_sprite = "utility/close_black",
     clicked_sprite = "utility/close_black",
     tooltip = {"gui.close-instruction"},
@@ -252,6 +308,43 @@ local function add_detail_row(parent, label, value)
   row.add({type = "label", caption = value})
 end
 
+local function add_wrapped_label(parent, style_name, caption)
+  local spec = {type = "label", caption = caption}
+  if style_name then
+    spec.style = style_name
+  end
+  local label = parent.add(spec)
+  label.style.single_line = false
+  label.style.horizontally_stretchable = true
+  return label
+end
+
+local function add_report_lines(parent, text, min_height)
+  local scroll = parent.add({
+    type = "scroll-pane",
+    direction = "vertical",
+    vertical_scroll_policy = "auto-and-reserve-space",
+  })
+  scroll.style.horizontally_stretchable = true
+  scroll.style.vertically_stretchable = true
+  scroll.style.minimal_height = min_height or 150
+
+  local content = scroll.add({type = "flow", direction = "vertical"})
+  content.style.horizontally_stretchable = true
+  content.style.vertical_spacing = 4
+
+  local lines = split_lines(text)
+  for index, line in ipairs(lines) do
+    add_wrapped_label(content, index == 1 and "bold_label" or "caption_label", line ~= "" and line or " ")
+  end
+
+  if #lines == 0 then
+    content.add({type = "label", style = "caption_label", caption = localised("none")})
+  end
+
+  return scroll
+end
+
 local function add_metric_card(parent, title, value, note)
   local card = parent.add({type = "frame", style = "inside_shallow_frame_with_padding", direction = "vertical"})
   card.style.minimal_width = 170
@@ -263,6 +356,40 @@ local function add_metric_card(parent, title, value, note)
   body.add({type = "label", style = "bold_label", caption = value})
   if note then
     body.add({type = "label", style = "caption_label", caption = note})
+  end
+end
+
+local function ensure_mod_button(player)
+  local button = player.gui.relative[constants.gui.mod_button]
+  if button and button.valid then
+    return button
+  end
+
+  return player.gui.relative.add({
+    type = "sprite-button",
+    name = constants.gui.mod_button,
+    style = mod_gui.button_style,
+    sprite = "item/trade-box",
+    tooltip = localised("trade-market"),
+    anchor = {
+      gui = defines.relative_gui_type.controller_gui,
+      position = defines.relative_gui_position.right,
+    },
+  })
+end
+
+local function refresh_mod_button(player)
+  destroy_legacy_mod_button(player)
+  local button = ensure_mod_button(player)
+  if button then
+    button.tooltip = {"", localised("trade-market"), "\n", balance_caption(player)}
+  end
+end
+
+local function refresh_window_balance(player)
+  local label = main_element(player, constants.gui.window_balance)
+  if label then
+    label.caption = balance_caption(player)
   end
 end
 
@@ -346,7 +473,15 @@ local function refresh_inserter_panel(player)
   end
 
   local stats = inserter_stats.get(root().inserter_stats, selected.unit_number)
-  local record = runtime_state.runtime().inserters[util.id_key(selected.unit_number)]
+  local record = entities.register_inserter(selected)
+  local ui = ui_state(player.index)
+  local selected_inserter_id = util.id_key(selected.unit_number)
+  if ui.selected_inserter_id ~= selected_inserter_id then
+    ui.selected_inserter_id = selected_inserter_id
+    ui.inserter_min_price = record and record.min_unit_price and tostring(record.min_unit_price) or ""
+    ui.inserter_feedback = nil
+  end
+
   local content = find_descendant(frame, INSERTER_CONTENT)
   clear_children(content)
   add_detail_row(content, localised("owner"), record and record.owner_player_index and runtime_state.player_name(record.owner_player_index) or localised("unknown"))
@@ -354,13 +489,46 @@ local function refresh_inserter_panel(player)
   add_detail_row(content, localised("lifetime-payout"), format.localised_money(stats and stats.lifetime_payout or 0))
   add_detail_row(content, localised("last-recipient"), stats and stats.last_recipient_id and runtime_state.player_name(stats.last_recipient_id) or localised("none"))
   add_detail_row(content, localised("last-trade"), format.localised_tick_age(game.tick, stats and stats.last_trade_tick or nil))
+  add_detail_row(
+    content,
+    localised("minimum-acceptable-price"),
+    record and record.min_unit_price and format.localised_money(record.min_unit_price) or localised("not-set")
+  )
+
+  local edit_row = content.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
+  edit_row.style.horizontally_stretchable = true
+  edit_row.add({type = "label", style = "caption_label", caption = localised("minimum-acceptable-price")})
+  local price_input = edit_row.add({
+    type = "textfield",
+    name = constants.gui.inserter_min_price,
+    text = ui.inserter_min_price or "",
+    numeric = true,
+    allow_decimal = false,
+    allow_negative = false,
+    clear_and_focus_on_right_click = true,
+  })
+  price_input.style.width = 110
+  edit_row.add({
+    type = "button",
+    name = constants.gui.inserter_min_price_save,
+    caption = localised("save"),
+  })
+
+  add_wrapped_label(content, "caption_label", localised("inserter-min-price-note"))
+  local feedback = content.add({
+    type = "label",
+    name = constants.gui.inserter_feedback,
+    style = "caption_label",
+    caption = "",
+  })
+  apply_feedback(feedback, ui.inserter_feedback)
 end
 
 local function filtered_orders(player)
   local filter_text = string.lower(ui_state(player.index).market_filter or "")
   local list = {}
   for _, order in ipairs(orders.list_current(root().orders)) do
-    if runtime_state.order_force_name(order) == player_force_name(player) and (filter_text == "" or string.find(string.lower(order.item_name), filter_text, 1, true)) then
+    if filter_text == "" or string.find(string.lower(order.item_name), filter_text, 1, true) then
       list[#list + 1] = order
     end
   end
@@ -370,12 +538,39 @@ end
 local function refresh_market_tab(player)
   local summary = main_element(player, constants.gui.market_results)
   local scroll = main_element(player, MARKET_SCROLL)
-  if not summary or not scroll then
+  local summary_content = main_element(player, MARKET_SUMMARY)
+  if not summary or not scroll or not summary_content then
     return
   end
 
   local market_orders = filtered_orders(player)
   summary.caption = localised("listings-count", #market_orders)
+  clear_children(summary_content)
+
+  local active_count = 0
+  local paused_count = 0
+  local buyers = {}
+  for _, order in ipairs(market_orders) do
+    if order.status == "active" then
+      active_count = active_count + 1
+    elseif order.status == "paused" then
+      paused_count = paused_count + 1
+    end
+    buyers[order.buyer_id] = true
+  end
+
+  local buyer_count = 0
+  for _ in pairs(buyers) do
+    buyer_count = buyer_count + 1
+  end
+
+  add_detail_row(summary_content, localised("matching-orders"), tostring(#market_orders))
+  add_detail_row(summary_content, localised("active-orders"), tostring(active_count))
+  add_detail_row(summary_content, localised("paused-orders"), tostring(paused_count))
+  add_detail_row(summary_content, localised("buyers"), tostring(buyer_count))
+  add_wrapped_label(summary_content, "caption_label", localised("market-filter-note"))
+  add_wrapped_label(summary_content, "caption_label", localised("market-trade-box-note"))
+
   clear_children(scroll)
   if #market_orders == 0 then
     scroll.add({type = "label", style = "caption_label", caption = localised("no-buy-orders-match")})
@@ -426,27 +621,29 @@ local function refresh_contract_detail(player)
     add_detail_row(container, localised("paid"), format.localised_tick_age(game.tick, selected.paid_tick))
   end
 
-  local description = container.add({type = "text-box", text = selected.description, read_only = true})
-  description.style.minimal_height = 92
-  description.style.horizontally_stretchable = true
+  container.add({type = "label", style = "caption_label", caption = localised("briefing")})
+  local description_frame = container.add({type = "frame", style = "inside_shallow_frame_with_padding", direction = "vertical"})
+  description_frame.style.horizontally_stretchable = true
+  add_wrapped_label(description_frame, nil, selected.description ~= "" and selected.description or localised("none"))
 
   local current_player_id = player.index
   if selected.creator_id ~= current_player_id and selected.status ~= "completed" then
-    local button_flow = container.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
+    local button_flow = container.add({type = "flow", direction = "horizontal"})
     button_flow.style.horizontally_stretchable = true
-    add_horizontal_pusher(button_flow)
     if selected.assignee_id == current_player_id then
-      button_flow.add({type = "button", name = constants.gui.contract_unassign, caption = localised("unassign")})
+      local button = button_flow.add({type = "button", name = constants.gui.contract_unassign, caption = localised("unassign")})
+      button.style.horizontally_stretchable = true
     else
-      button_flow.add({type = "button", name = constants.gui.contract_assign, caption = localised("assign-to-me")})
+      local button = button_flow.add({type = "button", name = constants.gui.contract_assign, caption = localised("assign-to-me")})
+      button.style.horizontally_stretchable = true
     end
   end
 
   if selected.creator_id == current_player_id and selected.assignee_id ~= nil and selected.status == "assigned" then
-    local payout_flow = container.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
+    local payout_flow = container.add({type = "flow", direction = "horizontal"})
     payout_flow.style.horizontally_stretchable = true
-    add_horizontal_pusher(payout_flow)
-    payout_flow.add({type = "button", name = constants.gui.contract_pay, caption = localised("pay-assignee")})
+    local button = payout_flow.add({type = "button", name = constants.gui.contract_pay, caption = localised("pay-assignee")})
+    button.style.horizontally_stretchable = true
   end
 end
 
@@ -500,6 +697,7 @@ local function refresh_economy_tab(player)
   local snapshot = economy.snapshot(force_name)
   local second = runtime_state.current_second(game.tick)
   local state = root()
+  local openish_contracts = contracts.count_openish(state.contracts, force_name)
 
   local cards = container.add({type = "flow", direction = "horizontal"})
   cards.style.horizontally_stretchable = true
@@ -523,20 +721,15 @@ local function refresh_economy_tab(player)
   end
 
   local _, balance_content = add_section(upper_row, localised("top-balances"))
-  local balance_rows = {}
-  for _, row in ipairs(ledger.top_balances(state.ledger, 5)) do
-    if runtime_state.player_in_force(row.player_id, force_name) then
-      balance_rows[#balance_rows + 1] = row
-    end
-  end
+  local balance_rows = runtime_state.force_wallet_rows(force_name, 5)
   if #balance_rows == 0 then
     balance_content.add({type = "label", style = "caption_label", caption = localised("no-balances")})
   else
     local balance_table = balance_content.add({type = "table", column_count = 2})
     balance_table.style.horizontally_stretchable = true
-    add_two_column_header(balance_table, localised("player"), localised("balance"))
+    add_two_column_header(balance_table, localised("wallet"), localised("balance"))
     for _, row in ipairs(balance_rows) do
-      balance_table.add({type = "label", caption = runtime_state.player_name(row.player_id)})
+      balance_table.add({type = "label", caption = runtime_state.actor_name(row.account_id)})
       balance_table.add({type = "label", caption = format.localised_money(row.balance)})
     end
   end
@@ -589,58 +782,71 @@ local function refresh_admin_tab(player)
   end
 
   clear_children(container)
+  local force_name = player_force_name(player)
+  local snapshot = economy.snapshot(force_name)
+  local second = runtime_state.current_second(game.tick)
+  local state = root()
 
-  local notes_frame = container.add({type = "frame", style = "inside_shallow_frame_with_padding", direction = "vertical"})
-  notes_frame.style.horizontally_stretchable = true
-  local notes = notes_frame.add({type = "flow", direction = "vertical"})
-  notes.style.horizontally_stretchable = true
-  notes.style.vertical_spacing = 4
-  notes.add({type = "label", style = "heading_2_label", caption = localised("admin-diagnostics")})
-  notes.add({
-    type = "label",
-    style = "caption_label",
-    caption = localised("chart-tag-scope-note"),
-  })
-  notes.add({
-    type = "label",
-    style = "caption_label",
-    caption = localised("admin-commands-note"),
-  })
+  local active_orders = 0
+  for _, order in ipairs(orders.list_current(state.orders)) do
+    if runtime_state.order_force_name(order) == force_name then
+      active_orders = active_orders + 1
+    end
+  end
 
-  local _, status_content = add_section(container, localised("economy-status"))
-  local status_box = status_content.add({
-    type = "text-box",
-    text = commands_runtime.render_trade_status(player_force_name(player)),
-    read_only = true,
-  })
-  status_box.style.horizontally_stretchable = true
-  status_box.style.minimal_height = 210
+  local cards = container.add({type = "flow", direction = "horizontal"})
+  cards.style.horizontally_stretchable = true
+  cards.style.horizontal_spacing = 12
+  add_metric_card(cards, localised("active-orders"), tostring(active_orders), localised("buy-orders"))
+  add_metric_card(cards, localised("contracts"), tostring(openish_contracts), localised("contracts-open-count", openish_contracts))
+  add_metric_card(cards, localised("last-minute-trade"), format.localised_money(metrics.trade_last_minute(state.metrics, second, force_name)), localised("rolling-window"))
+  add_metric_card(cards, localised("last-minute-ubi"), format.localised_money(metrics.ubi_last_minute(state.metrics, second, force_name)), localised("rolling-window"))
+
+  local notes_row = container.add({type = "flow", direction = "horizontal"})
+  notes_row.style.horizontally_stretchable = true
+  notes_row.style.horizontal_spacing = 12
+
+  local _, notes_content = add_section(notes_row, localised("admin-diagnostics"))
+  add_wrapped_label(notes_content, "caption_label", localised("chart-tag-scope-note"))
+  add_wrapped_label(notes_content, "caption_label", localised("admin-commands-note"))
+
+  local _, command_content = add_section(notes_row, localised("quick-commands"))
+  add_wrapped_label(command_content, "caption_label", {"", "/trade_status  ", localised("command-help-trade-status")})
+  add_wrapped_label(command_content, "caption_label", {"", "/trade_orders  ", localised("command-help-trade-orders")})
+  add_wrapped_label(command_content, "caption_label", {"", "/trade_contracts  ", localised("command-help-trade-contracts")})
+  add_wrapped_label(command_content, "caption_label", {"", "/trade_money_last_minute  ", localised("command-help-trade-money-last-minute")})
+  add_wrapped_label(command_content, "caption_label", {"", "/trade_ubi_last_minute  ", localised("command-help-trade-ubi-last-minute")})
+
+  local status_row = container.add({type = "flow", direction = "horizontal"})
+  status_row.style.horizontally_stretchable = true
+  status_row.style.horizontal_spacing = 12
+
+  local _, economy_content = add_section(status_row, localised("economy-status"))
+  add_detail_row(economy_content, localised("ubi-rate"), localised("gold-per-second", string.format("%.2f", snapshot.gold_per_second)))
+  add_detail_row(economy_content, localised("ore-throughput"), localised("units-per-minute-compact", string.format("%.1f", snapshot.recent_raw_ore_per_minute)))
+  add_report_lines(economy_content, commands_runtime.render_trade_status(force_name), 120)
 
   local lower_row = container.add({type = "flow", direction = "horizontal"})
   lower_row.style.horizontally_stretchable = true
   lower_row.style.horizontal_spacing = 12
 
   local _, orders_content = add_section(lower_row, localised("order-snapshot"))
-  local orders_box = orders_content.add({
-    type = "text-box",
-    text = commands_runtime.render_trade_orders(player_force_name(player)),
-    read_only = true,
-  })
-  orders_box.style.horizontally_stretchable = true
-  orders_box.style.minimal_height = 180
+  add_report_lines(orders_content, commands_runtime.render_trade_orders(force_name), 120)
 
   local _, contracts_content = add_section(lower_row, localised("contract-snapshot"))
-  local contracts_box = contracts_content.add({
-    type = "text-box",
-    text = commands_runtime.render_trade_contracts(player_force_name(player)),
-    read_only = true,
-  })
-  contracts_box.style.horizontally_stretchable = true
-  contracts_box.style.minimal_height = 180
+  add_report_lines(contracts_content, commands_runtime.render_trade_contracts(force_name), 120)
 end
 
 local function build_market_tab(player, container)
-  local toolbar = container.add({type = "frame", style = "subheader_frame"})
+  local columns = container.add({type = "flow", direction = "horizontal"})
+  columns.style.horizontally_stretchable = true
+  columns.style.horizontal_spacing = 12
+
+  local left = columns.add({type = "flow", direction = "vertical"})
+  left.style.horizontally_stretchable = true
+  left.style.vertical_spacing = 12
+
+  local toolbar = left.add({type = "frame", style = "subheader_frame"})
   toolbar.style.horizontally_stretchable = true
   toolbar.add({type = "label", style = "subheader_caption_label", caption = localised("buy-orders")})
   add_horizontal_pusher(toolbar)
@@ -649,7 +855,7 @@ local function build_market_tab(player, container)
   filter_field.style.minimal_width = 220
   toolbar.add({type = "label", name = constants.gui.market_results, style = "caption_label", caption = localised("listings-count", 0)})
 
-  local list_frame = container.add({type = "frame", style = "inside_shallow_frame", direction = "vertical"})
+  local list_frame = left.add({type = "frame", style = "inside_shallow_frame", direction = "vertical"})
   list_frame.style.horizontally_stretchable = true
   list_frame.style.vertically_stretchable = true
   local scroll = list_frame.add({
@@ -661,43 +867,38 @@ local function build_market_tab(player, container)
   })
   scroll.style.horizontally_stretchable = true
   scroll.style.vertically_stretchable = true
-  scroll.style.minimal_height = 470
+  scroll.style.minimal_height = 320
+
+  local sidebar = columns.add({type = "flow", direction = "vertical"})
+  sidebar.style.minimal_width = 250
+  sidebar.style.maximal_width = 250
+  sidebar.style.vertical_spacing = 12
+  add_section(sidebar, localised("market-overview"), MARKET_SUMMARY)
 end
 
 local function build_contracts_tab(player, container)
-  local columns = container.add({type = "flow", direction = "horizontal"})
-  columns.style.horizontally_stretchable = true
-  columns.style.horizontal_spacing = 12
-
-  local list_frame = columns.add({type = "frame", style = "inside_shallow_frame", direction = "vertical"})
-  list_frame.style.minimal_width = 320
-  list_frame.style.maximal_width = 340
-  list_frame.style.vertically_stretchable = true
-  local list_header = list_frame.add({type = "frame", style = "subheader_frame"})
-  list_header.style.horizontally_stretchable = true
-  list_header.add({type = "label", style = "subheader_caption_label", caption = localised("contracts")})
-  add_horizontal_pusher(list_header)
-  list_header.add({type = "label", name = constants.gui.contract_count, style = "caption_label", caption = localised("contracts-open-count", 0)})
-
-  local contract_list = list_frame.add({type = "list-box", name = constants.gui.contract_list, style = "wide_list_box_under_subheader"})
-  contract_list.style.minimal_height = 470
-  contract_list.style.horizontally_stretchable = true
-  contract_list.style.vertically_stretchable = true
-
-  local right = columns.add({type = "flow", direction = "vertical"})
-  right.style.horizontally_stretchable = true
-  right.style.vertical_spacing = 12
-  local contract_feedback = right.add({type = "label", name = constants.gui.contract_feedback, style = "caption_label", caption = ""})
+  local contract_feedback = container.add({type = "label", name = constants.gui.contract_feedback, style = "caption_label", caption = ""})
   contract_feedback.visible = false
-  local _, create_content = add_section(right, localised("create-contract"))
 
-  local title_row = create_content.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
+  local _, create_content = add_section(container, localised("create-contract"))
+  add_wrapped_label(create_content, "caption_label", localised("contract-create-note"))
+
+  local form = create_content.add({type = "flow", direction = "horizontal"})
+  form.style.horizontally_stretchable = true
+  form.style.horizontal_spacing = 16
+
+  local left_form = form.add({type = "flow", direction = "vertical"})
+  left_form.style.minimal_width = 320
+  left_form.style.maximal_width = 340
+  left_form.style.vertical_spacing = 8
+
+  local title_row = left_form.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
   title_row.style.horizontally_stretchable = true
   title_row.add({type = "label", style = "caption_label", caption = localised("title")})
   local title_field = title_row.add({type = "textfield", name = constants.gui.contract_title, text = ui_state(player.index).contract_title or ""})
   title_field.style.horizontally_stretchable = true
 
-  local amount_row = create_content.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
+  local amount_row = left_form.add({type = "flow", direction = "horizontal", style = "player_input_horizontal_flow"})
   amount_row.style.horizontally_stretchable = true
   amount_row.add({type = "label", style = "caption_label", caption = localised("reward")})
   amount_row.add({
@@ -710,33 +911,59 @@ local function build_contracts_tab(player, container)
     allow_negative = false,
   })
 
-  create_content.add({type = "label", style = "caption_label", caption = localised("briefing")})
-  local description = create_content.add({type = "text-box", name = constants.gui.contract_description, text = ui_state(player.index).contract_description or ""})
-  description.style.minimal_height = 110
+  local right_form = form.add({type = "flow", direction = "vertical"})
+  right_form.style.horizontally_stretchable = true
+  right_form.style.vertical_spacing = 8
+  right_form.add({type = "label", style = "caption_label", caption = localised("briefing")})
+  local description = right_form.add({type = "text-box", name = constants.gui.contract_description, text = ui_state(player.index).contract_description or ""})
+  description.style.minimal_height = 90
   description.style.horizontally_stretchable = true
 
-  local create_buttons = create_content.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
+  local create_buttons = right_form.add({type = "flow", direction = "horizontal"})
   create_buttons.style.horizontally_stretchable = true
-  add_horizontal_pusher(create_buttons)
-  create_buttons.add({type = "button", name = constants.gui.contract_create, caption = localised("create-contract")})
+  local create_button = create_buttons.add({type = "button", name = constants.gui.contract_create, caption = localised("create-contract")})
+  create_button.style.horizontally_stretchable = true
 
+  local columns = container.add({type = "flow", direction = "horizontal"})
+  columns.style.horizontally_stretchable = true
+  columns.style.horizontal_spacing = 12
+
+  local list_frame = columns.add({type = "frame", style = "inside_shallow_frame", direction = "vertical"})
+  list_frame.style.minimal_width = 280
+  list_frame.style.maximal_width = 300
+  list_frame.style.vertically_stretchable = true
+  local list_header = list_frame.add({type = "frame", style = "subheader_frame"})
+  list_header.style.horizontally_stretchable = true
+  list_header.add({type = "label", style = "subheader_caption_label", caption = localised("contracts")})
+  add_horizontal_pusher(list_header)
+  list_header.add({type = "label", name = constants.gui.contract_count, style = "caption_label", caption = localised("contracts-open-count", 0)})
+
+  local contract_list = list_frame.add({type = "list-box", name = constants.gui.contract_list, style = "wide_list_box_under_subheader"})
+  contract_list.style.minimal_height = 320
+  contract_list.style.horizontally_stretchable = true
+  contract_list.style.vertically_stretchable = true
+
+  local right = columns.add({type = "flow", direction = "vertical"})
+  right.style.horizontally_stretchable = true
+  right.style.vertical_spacing = 12
   add_section(right, localised("selected-contract"), constants.gui.selected_contract)
 end
 
 function gui.refresh_main(player)
   local frame = main_frame(player)
-  if not frame then
-    return
+  if frame then
+    local tabs = find_descendant(frame, constants.gui.main_tabs)
+    if tabs and tabs.selected_tab_index then
+      ui_state(player.index).selected_main_tab = tabs.selected_tab_index
+    end
+    sync_contract_form(player)
+    refresh_market_tab(player)
+    refresh_contracts_tab(player)
+    refresh_economy_tab(player)
+    refresh_admin_tab(player)
+    refresh_window_balance(player)
   end
-  local tabs = find_descendant(frame, constants.gui.main_tabs)
-  if tabs and tabs.selected_tab_index then
-    ui_state(player.index).selected_main_tab = tabs.selected_tab_index
-  end
-  sync_contract_form(player)
-  refresh_market_tab(player)
-  refresh_contracts_tab(player)
-  refresh_economy_tab(player)
-  refresh_admin_tab(player)
+  refresh_mod_button(player)
 end
 
 function gui.open_main(player)
@@ -749,17 +976,20 @@ function gui.open_main(player)
 
   local frame = player.gui.screen.add({type = "frame", name = constants.gui.screen_root, direction = "vertical"})
   frame.auto_center = true
-  frame.style.minimal_width = 980
+  frame.style.minimal_width = 900
   frame.style.maximal_height = math.floor((player.display_resolution.height / player.display_scale) * 0.84)
   add_window_titlebar(frame, localised("trade-market"))
 
   local body = frame.add({type = "frame", style = "inside_deep_frame", direction = "vertical"})
   body.style.horizontally_stretchable = true
+  body.style.vertically_stretchable = true
   local tabs = body.add({type = "tabbed-pane", name = constants.gui.main_tabs, style = "tabbed_pane_with_no_side_padding"})
+  tabs.style.vertically_stretchable = true
 
   local market_tab = tabs.add({type = "tab", caption = localised("market")})
   local market_content = tabs.add({type = "flow", name = constants.gui.market_tab, direction = "vertical"})
   market_content.style.horizontally_stretchable = true
+  market_content.style.vertically_stretchable = true
   market_content.style.vertical_spacing = 12
   market_content.style.top_padding = 12
   market_content.style.right_padding = 12
@@ -771,6 +1001,7 @@ function gui.open_main(player)
   local contracts_tab = tabs.add({type = "tab", caption = localised("contracts")})
   local contracts_content = tabs.add({type = "flow", name = constants.gui.contracts_tab, direction = "vertical"})
   contracts_content.style.horizontally_stretchable = true
+  contracts_content.style.vertically_stretchable = true
   contracts_content.style.vertical_spacing = 12
   contracts_content.style.top_padding = 12
   contracts_content.style.right_padding = 12
@@ -782,6 +1013,7 @@ function gui.open_main(player)
   local economy_tab = tabs.add({type = "tab", caption = localised("economy")})
   local economy_content = tabs.add({type = "flow", name = constants.gui.economy_tab, direction = "vertical"})
   economy_content.style.horizontally_stretchable = true
+  economy_content.style.vertically_stretchable = true
   economy_content.style.vertical_spacing = 12
   economy_content.style.top_padding = 12
   economy_content.style.right_padding = 12
@@ -791,15 +1023,30 @@ function gui.open_main(player)
 
   if player.admin then
     local admin_tab = tabs.add({type = "tab", caption = localised("admin")})
-    local admin_content = tabs.add({type = "flow", name = constants.gui.admin_tab, direction = "vertical"})
+    local admin_outer = tabs.add({type = "flow", direction = "vertical"})
+    admin_outer.style.horizontally_stretchable = true
+    admin_outer.style.vertically_stretchable = true
+    admin_outer.style.top_padding = 12
+    admin_outer.style.right_padding = 12
+    admin_outer.style.bottom_padding = 12
+    admin_outer.style.left_padding = 12
+    local admin_scroll = admin_outer.add({
+      type = "scroll-pane",
+      name = constants.gui.admin_scroll,
+      direction = "vertical",
+      vertical_scroll_policy = "auto-and-reserve-space",
+    })
+    admin_scroll.style.horizontally_stretchable = true
+    admin_scroll.style.vertically_stretchable = true
+    local admin_content = admin_scroll.add({type = "flow", name = constants.gui.admin_tab, direction = "vertical"})
     admin_content.style.horizontally_stretchable = true
     admin_content.style.vertical_spacing = 12
-    admin_content.style.top_padding = 12
-    admin_content.style.right_padding = 12
-    admin_content.style.bottom_padding = 12
-    admin_content.style.left_padding = 12
-    tabs.add_tab(admin_tab, admin_content)
+    tabs.add_tab(admin_tab, admin_outer)
   end
+
+  local footer = frame.add({type = "frame", style = "subheader_frame"})
+  footer.style.horizontally_stretchable = true
+  footer.add({type = "label", name = constants.gui.window_balance, style = "subheader_caption_label", caption = ""})
 
   tabs.selected_tab_index = math.max(1, math.min(ui_state(player.index).selected_main_tab or 1, main_tab_count(player)))
   set_main_shortcut_toggled(player, true)
@@ -827,7 +1074,6 @@ function gui.show_trade_box_panel(player, entity)
     type = "frame",
     name = constants.gui.trade_box_root,
     direction = "vertical",
-    caption = localised("trade-order"),
     anchor = {
       gui = defines.relative_gui_type.container_gui,
       position = defines.relative_gui_position.right,
@@ -835,6 +1081,7 @@ function gui.show_trade_box_panel(player, entity)
     },
   })
   frame.style.minimal_width = 320
+  add_panel_titlebar(frame, localised("trade-order"), constants.gui.buy_order_close)
 
   local body = frame.add({type = "frame", style = "inside_deep_frame", direction = "vertical"})
   body.style.horizontally_stretchable = true
@@ -879,15 +1126,16 @@ function gui.show_trade_box_panel(player, entity)
 
   local primary_buttons = content.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
   primary_buttons.style.horizontally_stretchable = true
-  primary_buttons.add({type = "button", name = constants.gui.buy_order_cancel, caption = localised("close")})
-  add_horizontal_pusher(primary_buttons)
-  primary_buttons.add({type = "button", name = constants.gui.buy_order_save, caption = localised("save-order")})
+  local save_button = primary_buttons.add({type = "button", name = constants.gui.buy_order_save, caption = localised("save-order")})
+  save_button.style.horizontally_stretchable = true
 
   local secondary_buttons = content.add({type = "flow", direction = "horizontal", style = "dialog_buttons_horizontal_flow"})
   secondary_buttons.style.horizontally_stretchable = true
-  secondary_buttons.add({type = "button", name = constants.gui.buy_order_delete, caption = localised("delete-order")})
-  add_horizontal_pusher(secondary_buttons)
-  secondary_buttons.add({type = "button", name = constants.gui.buy_order_toggle, caption = localised("pause-order")})
+  secondary_buttons.style.horizontal_spacing = 12
+  local delete_button = secondary_buttons.add({type = "button", name = constants.gui.buy_order_delete, caption = localised("delete-order")})
+  delete_button.style.horizontally_stretchable = true
+  local toggle_button = secondary_buttons.add({type = "button", name = constants.gui.buy_order_toggle, caption = localised("pause-order")})
+  toggle_button.style.horizontally_stretchable = true
 
   trade.note_trade_box_context(player.index, entity)
   refresh_trade_box_panel(player)
@@ -931,12 +1179,23 @@ function gui.show_selected_inserter(player)
   local content = content_frame.add({type = "flow", name = INSERTER_CONTENT, direction = "vertical"})
   content.style.horizontally_stretchable = true
   content.style.vertical_spacing = 8
+  local ui = ui_state(player.index)
+  local selected_inserter_id = util.id_key(selected.unit_number)
+  local record = entities.register_inserter(selected)
+  ui.selected_inserter_id = selected_inserter_id
+  ui.inserter_min_price = record and record.min_unit_price and tostring(record.min_unit_price) or ""
+  ui.inserter_feedback = nil
   refresh_inserter_panel(player)
 end
 
 function gui.handle_click(event)
   local player = game.players[event.player_index]
   local name = event.element.name
+
+  if name == constants.gui.mod_button then
+    gui.toggle_main(player)
+    return
+  end
 
   if name == "trade_mode_close_main" then
     if main_frame(player) then
@@ -946,7 +1205,7 @@ function gui.handle_click(event)
     return
   end
 
-  if name == constants.gui.buy_order_cancel then
+  if name == constants.gui.buy_order_cancel or name == constants.gui.buy_order_close then
     gui.hide_trade_box_panel(player)
     trade.note_trade_box_context(player.index, nil)
     return
@@ -994,6 +1253,7 @@ function gui.handle_click(event)
       local created = orders.create_order(state.orders, {
         box_id = box_record.box_id,
         buyer_id = player.index,
+        buyer_wallet_id = runtime_state.wallet_id_for_player(player.index),
         force_name = player_force_name(player),
         item_name = item_name,
         unit_price = unit_price,
@@ -1050,6 +1310,39 @@ function gui.handle_click(event)
     return
   end
 
+  if name == constants.gui.inserter_min_price_save then
+    local selected = player.selected
+    if not selected or not selected.valid or selected.type ~= "inserter" then
+      set_feedback(player, "inserter_feedback", "error", localised("inserter-feedback-no-selection"))
+      refresh_inserter_panel(player)
+      return
+    end
+
+    local ui = ui_state(player.index)
+    local text = ui.inserter_min_price or ""
+    local min_unit_price = nil
+    if text ~= "" then
+      min_unit_price = parse_numeric_text(text)
+      if not min_unit_price then
+        set_feedback(player, "inserter_feedback", "error", localised("inserter-feedback-invalid"))
+        refresh_inserter_panel(player)
+        return
+      end
+    end
+
+    local updated = entities.set_inserter_min_price(selected, min_unit_price)
+    if not updated.ok then
+      set_feedback(player, "inserter_feedback", "error", localised("inserter-feedback-save-failed"))
+    elseif min_unit_price then
+      set_feedback(player, "inserter_feedback", "success", localised("inserter-feedback-saved", format.localised_money(min_unit_price)))
+    else
+      set_feedback(player, "inserter_feedback", "success", localised("inserter-feedback-cleared"))
+    end
+    ui.inserter_min_price = min_unit_price and tostring(min_unit_price) or ""
+    refresh_inserter_panel(player)
+    return
+  end
+
   if name == constants.gui.contract_create then
     local ui = ui_state(player.index)
     local amount = parse_numeric_text(ui.contract_amount)
@@ -1061,6 +1354,7 @@ function gui.handle_click(event)
 
     contracts.create_contract(root().contracts, {
       creator_id = player.index,
+      creator_wallet_id = runtime_state.wallet_id_for_player(player.index),
       force_name = player_force_name(player),
       title = ui.contract_title,
       description = ui.contract_description,
@@ -1083,11 +1377,19 @@ function gui.handle_click(event)
   end
 
   if name == constants.gui.contract_assign then
-    local result = contracts.assign_self(root().contracts, selected_contract_id, player.index, game.tick, player_force_name(player))
+    local result = contracts.assign_self(
+      root().contracts,
+      selected_contract_id,
+      player.index,
+      game.tick,
+      player_force_name(player),
+      runtime_state.wallet_id_for_player(player.index)
+    )
     if not result.ok then
       set_feedback(player, "contract_feedback", "error", localised("contract-feedback-assign-failed", localised_error(result.error)))
     else
       set_feedback(player, "contract_feedback", "success", localised("contract-feedback-assigned"))
+      notifications.notify_contract_assigned(result.contract, player.index)
     end
     gui.refresh_main(player)
     return
@@ -1138,6 +1440,11 @@ function gui.handle_text_changed(event)
   end
   if event.element.name == constants.gui.buy_order_price then
     refresh_trade_box_panel(player)
+    return
+  end
+  if event.element.name == constants.gui.inserter_min_price then
+    ui.inserter_min_price = event.element.text
+    return
   end
 end
 
@@ -1169,6 +1476,7 @@ function gui.handle_selected_tab_changed(event)
 end
 
 function gui.refresh_context_panels(player)
+  refresh_mod_button(player)
   if buy_order_panel(player) then
     refresh_trade_box_panel(player)
   end

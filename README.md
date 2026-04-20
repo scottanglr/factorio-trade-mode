@@ -4,6 +4,8 @@ Trade-focused multiplayer economy for Factorio 2.0 with:
 
 - Trade boxes that settle buy orders automatically
 - Global contracts with assign/unassign and creator-authorized payout
+- Team-shared force wallets that still allow cross-team trading
+- Inserter supplier floor-prices plus in-flight price locking to prevent buyer-side mid-delivery price tampering
 - UBI-style money injection tied to recent raw ore throughput
 - Admin observability commands for money flow, UBI, orders, and contracts
 - Inserter lifetime payout tracking with player-facing stats
@@ -29,9 +31,12 @@ If you want to use the included updater:
 
 1. Extract the release zip into your Factorio `mods` folder.
 2. Open the extracted mod folder.
-3. Run [auto-update.bat](<C:\Users\scott\OneDrive\Documents\Factorio Mod\auto-update.bat:1>) whenever you want to pull the newest GitHub release into that folder.
+3. Run `trade_mode/auto-update.bat` to pull the newest GitHub release into that folder.
+4. Optional: run root `auto-update.bat` instead; it is a wrapper that calls `trade_mode/auto-update.bat`.
 
 This is meant for Windows players who prefer an unpacked mod folder instead of replacing zip files by hand.
+
+Release zips include only the distributable mod files (`info.json`, `control.lua`, `data.lua`, `settings.lua`, `changelog.txt`, `locale/`, `prototypes/`, `trade_mode/`, and updater scripts). Dev/test files are excluded.
 
 ## For Players
 
@@ -47,14 +52,14 @@ This is meant for Windows players who prefer an unpacked mod folder instead of r
 
 1. Craft and place a `Trade Box`.
 2. Open it and set the requested item plus the price per unit.
-3. Other players can deliver into that box manually or by inserter.
+3. Other players can deliver into that box manually or by inserter (inserters need a minimum acceptable price set in the inserter panel).
 4. The configured buyer pays automatically when the delivery settles.
 
 ### Opening the main panel
 
 - Keyboard shortcut: `Ctrl + T`
 - Alternate shortcut: `Shift + T`
-- Toolbar shortcut: `Trade Market`
+- Top-right mod button near the minimap: `Trade Market`
 
 ### Admin commands
 

@@ -3,6 +3,23 @@ local util = require("trade_mode.core.util")
 
 local contracts = {}
 
+local STATUS_PRIORITY = {
+  open = 1,
+  assigned = 2,
+  cancelled = 3,
+  completed = 4,
+}
+
+local function assert_wallet_id(value, field_name)
+  if util.is_positive_integer(value) then
+    return
+  end
+  if type(value) == "string" and value ~= "" then
+    return
+  end
+  error(field_name .. " must be a positive integer or non-empty string")
+end
+
 local function ensure_state(state)
   state.next_id = state.next_id or 1
   state.by_id = state.by_id or {}
@@ -21,15 +38,20 @@ function contracts.create_contract(state, fields)
   util.assert_non_empty_string(fields.title, "title")
   util.assert_non_empty_string(fields.description, "description")
   util.assert_positive_integer(fields.amount, "amount")
+  if fields.creator_wallet_id ~= nil then
+    assert_wallet_id(fields.creator_wallet_id, "creator_wallet_id")
+  end
 
   local contract = {
     id = state.next_id,
     creator_id = fields.creator_id,
+    creator_wallet_id = fields.creator_wallet_id or fields.creator_id,
     force_name = fields.force_name,
     title = fields.title,
     description = fields.description,
     amount = fields.amount,
     assignee_id = nil,
+    assignee_wallet_id = nil,
     status = "open",
     created_tick = fields.tick or 0,
     updated_tick = fields.tick or 0,
@@ -48,9 +70,12 @@ function contracts.get_by_id(state, contract_id)
   return get_contract(state, contract_id)
 end
 
-function contracts.assign_self(state, contract_id, player_id, tick, force_name)
+function contracts.assign_self(state, contract_id, player_id, tick, force_name, assignee_wallet_id)
   local contract = get_contract(state, contract_id)
   util.assert_positive_integer(player_id, "player_id")
+  if assignee_wallet_id ~= nil then
+    assert_wallet_id(assignee_wallet_id, "assignee_wallet_id")
+  end
   if not contract then
     return {
       ok = false,
@@ -80,6 +105,7 @@ function contracts.assign_self(state, contract_id, player_id, tick, force_name)
   end
 
   contract.assignee_id = player_id
+  contract.assignee_wallet_id = assignee_wallet_id or player_id
   contract.status = "assigned"
   contract.updated_tick = tick or contract.updated_tick
   return {
@@ -120,6 +146,7 @@ function contracts.unassign_self(state, contract_id, player_id, tick, force_name
   end
 
   contract.assignee_id = nil
+  contract.assignee_wallet_id = nil
   contract.status = "open"
   contract.updated_tick = tick or contract.updated_tick
   return {
@@ -161,8 +188,8 @@ function contracts.payout(state, ledger_state, contract_id, actor_id, tick, forc
 
   local transfer = ledger.transfer(
     ledger_state,
-    contract.creator_id,
-    contract.assignee_id,
+    contract.creator_wallet_id or contract.creator_id,
+    contract.assignee_wallet_id or contract.assignee_id,
     contract.amount,
     "contract:" .. tostring(contract.id)
   )
@@ -195,13 +222,15 @@ function contracts.list_all(state, force_name)
   end
 
   table.sort(list, function(left, right)
-    if left.status ~= right.status then
-      return left.status < right.status
+    local left_priority = STATUS_PRIORITY[left.status] or 99
+    local right_priority = STATUS_PRIORITY[right.status] or 99
+    if left_priority ~= right_priority then
+      return left_priority < right_priority
     end
-    if left.title ~= right.title then
-      return left.title < right.title
+    if left.created_tick ~= right.created_tick then
+      return (left.created_tick or 0) > (right.created_tick or 0)
     end
-    return left.id < right.id
+    return left.id > right.id
   end)
 
   return list
@@ -220,6 +249,14 @@ end
 
 function contracts.normalize(state)
   ensure_state(state)
+  for _, contract in pairs(state.by_id) do
+    if contract.creator_wallet_id == nil then
+      contract.creator_wallet_id = contract.creator_id
+    end
+    if contract.assignee_id ~= nil and contract.assignee_wallet_id == nil then
+      contract.assignee_wallet_id = contract.assignee_id
+    end
+  end
   return state
 end
 

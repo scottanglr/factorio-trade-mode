@@ -32,7 +32,7 @@ If you are new to the mod, read these in order:
 - An admin-only `Admin` tab for live diagnostics.
 - Automatic settlement when players or inserters deliver into active trade boxes.
 - A contract board for player-to-player jobs.
-- A shared gold economy funded by recent raw ore production.
+- A shared gold economy funded by recent raw ore throughput.
 - Optional map chart tags for active trade boxes.
 - Inserter payout tracking for automated delivery setups.
 

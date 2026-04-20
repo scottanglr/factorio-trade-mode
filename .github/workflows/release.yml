@@ -1,10 +1,11 @@
 name: Release Mod
 
 on:
-  pull_request:
-    types:
-      - closed
+  push:
+    branches:
+      - main
     paths:
+      - 'trade_mode'
       - 'trade_mode/**'
       - 'control.lua'
       - 'data.lua'
@@ -13,7 +14,6 @@ on:
       - 'changelog.txt'
       - 'locale/**'
       - 'prototypes/**'
-      - 'scenarios/**'
       - 'auto-update.bat'
 
 permissions:
@@ -21,23 +21,26 @@ permissions:
 
 jobs:
   release:
-    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out merged commit
+      - name: Check out pushed commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.sha }}
 
       - name: Prepare release metadata
         id: meta
         shell: bash
         run: |
           release_date="$(date -u +"%Y-%m-%dT%H-%M-%SZ")"
-          zip_name="factorio-trade-mode-${release_date}.zip"
+          mod_name="$(python3 -c 'import json; print(json.load(open("info.json", encoding="utf-8"))["name"])')"
+          mod_version="$(python3 -c 'import json; print(json.load(open("info.json", encoding="utf-8"))["version"])')"
+          package_root="${mod_name}_${mod_version}"
+          zip_name="${package_root}.zip"
           tag_name="release-${release_date}"
 
+          echo "package_root=${package_root}" >> "$GITHUB_OUTPUT"
           echo "release_date=${release_date}" >> "$GITHUB_OUTPUT"
           echo "zip_name=${zip_name}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
@@ -45,13 +48,10 @@ jobs:
       - name: Build release archive from mod package
         shell: bash
         run: |
-          mod_name="$(python3 -c 'import json; print(json.load(open("info.json", encoding="utf-8"))["name"])')"
-          mod_version="$(python3 -c 'import json; print(json.load(open("info.json", encoding="utf-8"))["version"])')"
-          package_root="${mod_name}_${mod_version}"
-
+          package_root="${{ steps.meta.outputs.package_root }}"
           mkdir -p "$package_root"
           cp control.lua data.lua settings.lua info.json changelog.txt auto-update.bat "$package_root"/
-          cp -R locale prototypes scenarios trade_mode "$package_root"/
+          cp -R locale prototypes trade_mode "$package_root"/
 
           zip -r "${{ steps.meta.outputs.zip_name }}" "$package_root"
 

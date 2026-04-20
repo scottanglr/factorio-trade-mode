@@ -4,6 +4,7 @@ local entities = require("trade_mode.runtime.entities")
 local inserter_stats = require("trade_mode.core.inserter_stats")
 local ledger = require("trade_mode.core.ledger")
 local metrics = require("trade_mode.core.metrics")
+local notifications = require("trade_mode.runtime.notifications")
 local orders = require("trade_mode.core.orders")
 local runtime_state = require("trade_mode.runtime.state")
 local util = require("trade_mode.core.util")
@@ -162,6 +163,19 @@ local function refund_excess(box_record, source, item_name, quantity)
   end
 end
 
+local function settlement_unit_price(source, order)
+  if source.kind ~= "inserter" then
+    return order.unit_price
+  end
+
+  local locked_price = source.inserter_record and source.inserter_record.pending_unit_price
+  if util.is_positive_integer(locked_price) then
+    return locked_price
+  end
+
+  return order.unit_price
+end
+
 local function reconcile_order_box(box_record, tick)
   if not box_record.entity.valid then
     entities.unregister_trade_box(box_record.box_id)
@@ -205,23 +219,42 @@ local function reconcile_order_box(box_record, tick)
     return
   end
 
-  if not runtime_state.player_in_force(source.player_index, box_record.entity.force.name) then
-    refund_excess(box_record, source, order.item_name, delta)
-    box_record.tracked_item_count = inventory.get_item_count(order.item_name)
-    return
+  local settled_unit_price = settlement_unit_price(source, order)
+  if source.kind == "inserter" then
+    local min_unit_price = entities.inserter_min_unit_price(source.inserter_record)
+    if min_unit_price == nil or settled_unit_price < min_unit_price then
+      refund_excess(box_record, source, order.item_name, delta)
+      entities.clear_inserter_pending(source.inserter_record)
+      box_record.tracked_item_count = inventory.get_item_count(order.item_name)
+      return
+    end
   end
 
-  local affordable_quantity = math.floor(ledger.get_balance(root.ledger, order.buyer_id) / order.unit_price)
+  local buyer_wallet_id = runtime_state.order_wallet_id(order) or order.buyer_id
+  local affordable_quantity = math.floor(ledger.get_balance(root.ledger, buyer_wallet_id) / settled_unit_price)
   local settled_quantity = math.min(delta, affordable_quantity)
   local overflow_quantity = delta - settled_quantity
 
   if settled_quantity <= 0 then
     refund_excess(box_record, source, order.item_name, delta)
+    if source.kind == "inserter" then
+      entities.clear_inserter_pending(source.inserter_record)
+    end
     box_record.tracked_item_count = inventory.get_item_count(order.item_name)
     return
   end
 
-  local result = orders.settle_insert(root.orders, root.ledger, order.id, source.player_index, settled_quantity, tick)
+  local was_first_fill = not order.first_fill_notified and (order.total_units_traded or 0) <= 0
+  local result = orders.settle_insert(
+    root.orders,
+    root.ledger,
+    order.id,
+    source.player_index,
+    settled_quantity,
+    tick,
+    runtime_state.wallet_id_for_player(source.player_index),
+    settled_unit_price
+  )
   if result.ok then
     local current_second = runtime_state.current_second(tick)
     metrics.record_trade(
@@ -248,9 +281,17 @@ local function reconcile_order_box(box_record, tick)
         box_record.box_id
       )
     end
+    if was_first_fill then
+      order.first_fill_notified = true
+      notifications.notify_trade_box_first_fill(order, source.player_index, settled_quantity, box_record)
+    end
     refund_excess(box_record, source, order.item_name, overflow_quantity)
   else
     refund_excess(box_record, source, order.item_name, delta)
+  end
+
+  if source.kind == "inserter" then
+    entities.clear_inserter_pending(source.inserter_record)
   end
 
   box_record.tracked_item_count = inventory.get_item_count(order.item_name)

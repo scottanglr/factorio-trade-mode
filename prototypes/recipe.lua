@@ -4,12 +4,11 @@ data:extend({
     name = "trade-box",
     enabled = true,
     ingredients = {
-      {type = "item", name = "steel-chest", amount = 1},
-      {type = "item", name = "electronic-circuit", amount = 2},
+      {type = "item", name = "iron-plate", amount = 8},
+      {type = "item", name = "copper-plate", amount = 8},
     },
     results = {
       {type = "item", name = "trade-box", amount = 1},
     },
   },
 })
-

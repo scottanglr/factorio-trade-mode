@@ -36,6 +36,7 @@ Then click `Create contract`.
 - Any player except the creator can assign themselves to an open contract.
 - The current assignee can unassign themselves if the contract has not been completed.
 - The creator cannot assign their own contract to themselves.
+- When someone assigns themselves, the contract creator receives a notification naming the assignee and contract title.
 
 ## Paying Out A Contract
 
@@ -47,7 +48,7 @@ Only the creator can pay a contract, and only when:
 
 When payment succeeds:
 
-- Gold is transferred from the creator to the assignee.
+- Gold is transferred from the creator's force wallet to the assignee's force wallet.
 - The contract becomes `Completed`.
 - The paid time is recorded internally for status display.
 

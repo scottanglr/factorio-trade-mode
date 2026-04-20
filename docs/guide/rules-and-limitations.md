@@ -16,6 +16,9 @@ This page collects the practical limits and expectations that matter during real
 
 - Players only get paid when the mod can attribute the delivery to a real supplier.
 - Manual delivery and automated delivery are both supported.
+- Inserters must have a minimum acceptable unit price configured before they can auto-sell.
+- If an order is below the inserter's minimum, that inserter will not settle new deliveries for that order.
+- In-flight inserter deliveries use a locked pickup price, so buyer price edits apply to future deliveries, not the one already on the arm.
 - If a delivery cannot be attributed safely, the mod refuses to pay blindly.
 - Failed settlements refund or spill the items instead of letting them disappear unpaid.
 
@@ -30,6 +33,8 @@ This page collects the practical limits and expectations that matter during real
 ## Economy Rules
 
 - Trade orders and contracts draw from the same gold balance system.
+- In team play, each force shares one wallet across all members.
+- Cross-force trade is allowed; settlement moves value between those force wallets.
 - Only connected players receive UBI.
 - Economy and recent-activity views use rolling 60-second windows.
 

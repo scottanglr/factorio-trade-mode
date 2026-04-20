@@ -10,6 +10,16 @@ local VALID_STATUSES = {
   cancelled = true,
 }
 
+local function assert_wallet_id(value, field_name)
+  if util.is_positive_integer(value) then
+    return
+  end
+  if type(value) == "string" and value ~= "" then
+    return
+  end
+  error(field_name .. " must be a positive integer or non-empty string")
+end
+
 local function ensure_state(state)
   state.next_id = state.next_id or 1
   state.by_id = state.by_id or {}
@@ -38,6 +48,9 @@ function orders.create_order(state, fields)
   util.assert_positive_integer(fields.buyer_id, "buyer_id")
   util.assert_non_empty_string(fields.item_name, "item_name")
   pricing.validate_unit_price(fields.unit_price)
+  if fields.buyer_wallet_id ~= nil then
+    assert_wallet_id(fields.buyer_wallet_id, "buyer_wallet_id")
+  end
 
   local box_id = normalize_box_id(fields.box_id)
   if state.by_box_id[box_id] ~= nil then
@@ -51,6 +64,7 @@ function orders.create_order(state, fields)
     id = state.next_id,
     box_id = box_id,
     buyer_id = fields.buyer_id,
+    buyer_wallet_id = fields.buyer_wallet_id or fields.buyer_id,
     force_name = fields.force_name,
     item_name = fields.item_name,
     unit_price = fields.unit_price,
@@ -58,10 +72,12 @@ function orders.create_order(state, fields)
     created_tick = fields.tick or 0,
     updated_tick = fields.tick or 0,
     last_trade_tick = nil,
+    last_trade_unit_price = nil,
     last_trade_total = 0,
     last_recipient_id = nil,
     total_traded = 0,
     total_units_traded = 0,
+    first_fill_notified = false,
   }
 
   state.by_id[order.id] = order
@@ -98,6 +114,9 @@ function orders.update_order(state, order_id, fields)
 
   if fields.item_name ~= nil then
     util.assert_non_empty_string(fields.item_name, "item_name")
+    if order.item_name ~= fields.item_name then
+      order.first_fill_notified = false
+    end
     order.item_name = fields.item_name
   end
 
@@ -109,6 +128,11 @@ function orders.update_order(state, order_id, fields)
   if fields.status ~= nil then
     validate_status(fields.status)
     order.status = fields.status
+  end
+
+  if fields.buyer_wallet_id ~= nil then
+    assert_wallet_id(fields.buyer_wallet_id, "buyer_wallet_id")
+    order.buyer_wallet_id = fields.buyer_wallet_id
   end
 
   if fields.tick ~= nil then
@@ -186,10 +210,16 @@ function orders.count_active(state)
   return count
 end
 
-function orders.settle_insert(state, ledger_state, order_id, recipient_id, quantity, tick)
+function orders.settle_insert(state, ledger_state, order_id, recipient_id, quantity, tick, recipient_wallet_id, unit_price_override)
   local order = get_order(state, order_id)
   util.assert_positive_integer(recipient_id, "recipient_id")
   util.assert_positive_integer(quantity, "quantity")
+  if recipient_wallet_id ~= nil then
+    assert_wallet_id(recipient_wallet_id, "recipient_wallet_id")
+  end
+  if unit_price_override ~= nil then
+    pricing.validate_unit_price(unit_price_override)
+  end
 
   if not order then
     return {
@@ -206,11 +236,14 @@ function orders.settle_insert(state, ledger_state, order_id, recipient_id, quant
     }
   end
 
-  local total = order.unit_price * quantity
+  local unit_price = unit_price_override or order.unit_price
+  local total = unit_price * quantity
+  local buyer_wallet_id = order.buyer_wallet_id or order.buyer_id
+  local recipient_target_wallet_id = recipient_wallet_id or recipient_id
   local transfer = ledger.transfer(
     ledger_state,
-    order.buyer_id,
-    recipient_id,
+    buyer_wallet_id,
+    recipient_target_wallet_id,
     total,
     "buy_order:" .. tostring(order.id)
   )
@@ -226,6 +259,7 @@ function orders.settle_insert(state, ledger_state, order_id, recipient_id, quant
 
   order.updated_tick = tick or order.updated_tick
   order.last_trade_tick = tick or order.last_trade_tick
+  order.last_trade_unit_price = unit_price
   order.last_trade_total = total
   order.last_recipient_id = recipient_id
   order.total_traded = order.total_traded + total
@@ -234,6 +268,7 @@ function orders.settle_insert(state, ledger_state, order_id, recipient_id, quant
   return {
     ok = true,
     total = total,
+    unit_price = unit_price,
     order = order,
     from_balance = transfer.from_balance,
     to_balance = transfer.to_balance,
@@ -242,6 +277,17 @@ end
 
 function orders.normalize(state)
   ensure_state(state)
+  for _, order in pairs(state.by_id) do
+    if order.buyer_wallet_id == nil then
+      order.buyer_wallet_id = order.buyer_id
+    end
+    if order.first_fill_notified == nil then
+      order.first_fill_notified = (order.total_units_traded or 0) > 0
+    end
+    if order.last_trade_unit_price ~= nil then
+      pricing.validate_unit_price(order.last_trade_unit_price)
+    end
+  end
   return state
 end
 

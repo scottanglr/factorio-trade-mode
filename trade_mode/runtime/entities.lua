@@ -2,6 +2,7 @@ local constants = require("trade_mode.runtime.constants")
 local format = require("trade_mode.runtime.format")
 local ledger = require("trade_mode.core.ledger")
 local orders = require("trade_mode.core.orders")
+local pricing = require("trade_mode.core.pricing")
 local runtime_state = require("trade_mode.runtime.state")
 local util = require("trade_mode.core.util")
 
@@ -16,6 +17,13 @@ local function is_inserter(entity)
 end
 
 local function box_key(entity_or_id)
+  if type(entity_or_id) == "table" then
+    return util.id_key(entity_or_id.unit_number)
+  end
+  return util.id_key(entity_or_id)
+end
+
+local function inserter_key(entity_or_id)
   if type(entity_or_id) == "table" then
     return util.id_key(entity_or_id.unit_number)
   end
@@ -42,7 +50,7 @@ end
 
 local function ensure_inserter_record(entity)
   local runtime = runtime_state.runtime()
-  local key = util.id_key(entity.unit_number)
+  local key = inserter_key(entity)
   local record = runtime.inserters[key]
   if record == nil then
     record = {
@@ -52,9 +60,20 @@ local function ensure_inserter_record(entity)
       pending_box_id = nil,
       pending_item_name = nil,
       pending_count = 0,
+      pending_unit_price = nil,
       last_seen_tick = 0,
+      min_unit_price = nil,
     }
     runtime.inserters[key] = record
+  end
+
+  record.pending_count = record.pending_count or 0
+  record.last_seen_tick = record.last_seen_tick or 0
+  if record.min_unit_price ~= nil and not util.is_positive_integer(record.min_unit_price) then
+    record.min_unit_price = nil
+  end
+  if record.pending_unit_price ~= nil and not util.is_positive_integer(record.pending_unit_price) then
+    record.pending_unit_price = nil
   end
 
   record.entity = entity
@@ -62,6 +81,22 @@ local function ensure_inserter_record(entity)
     record.owner_player_index = entity.last_user.index
   end
   return record
+end
+
+local function lookup_inserter_record(entity_or_id)
+  local runtime = runtime_state.runtime()
+  if type(entity_or_id) == "table" then
+    if entity_or_id.inserter_id ~= nil then
+      local key = util.id_key(entity_or_id.inserter_id)
+      return runtime.inserters[key] or entity_or_id
+    end
+    if not entity_or_id.valid or not entity_or_id.unit_number then
+      return nil
+    end
+    return ensure_inserter_record(entity_or_id)
+  end
+
+  return runtime.inserters[inserter_key(entity_or_id)]
 end
 
 local function box_inventory(entity)
@@ -195,6 +230,45 @@ function entities.register_inserter(entity)
   return ensure_inserter_record(entity)
 end
 
+function entities.clear_inserter_pending(record_or_entity)
+  local record = lookup_inserter_record(record_or_entity)
+  if not record then
+    return
+  end
+  record.pending_box_id = nil
+  record.pending_item_name = nil
+  record.pending_count = 0
+  record.pending_unit_price = nil
+  record.last_seen_tick = 0
+end
+
+function entities.inserter_min_unit_price(record_or_entity)
+  local record = lookup_inserter_record(record_or_entity)
+  if not record then
+    return nil
+  end
+  return record.min_unit_price
+end
+
+function entities.set_inserter_min_price(record_or_entity, min_unit_price)
+  local record = lookup_inserter_record(record_or_entity)
+  if not record then
+    return {
+      ok = false,
+      error = "inserter_not_found",
+    }
+  end
+
+  if min_unit_price ~= nil then
+    pricing.validate_unit_price(min_unit_price)
+  end
+  record.min_unit_price = min_unit_price
+  return {
+    ok = true,
+    record = record,
+  }
+end
+
 function entities.find_nearby_inserter_records(box_record)
   local entity = box_record.entity
   if not entity.valid then
@@ -232,9 +306,19 @@ function entities.capture_inserter_candidates(box_record, order, tick)
   for _, inserter_record in ipairs(candidates) do
     local inserter = inserter_record.entity
     if inserter.valid and inserter.held_stack.valid_for_read and inserter.held_stack.name == order.item_name then
+      local held_count = inserter.held_stack.count
+      local should_lock_price =
+        inserter_record.pending_box_id ~= box_record.box_id or
+        inserter_record.pending_item_name ~= order.item_name or
+        inserter_record.pending_count ~= held_count or
+        inserter_record.pending_unit_price == nil
+
       inserter_record.pending_box_id = box_record.box_id
       inserter_record.pending_item_name = order.item_name
-      inserter_record.pending_count = inserter.held_stack.count
+      inserter_record.pending_count = held_count
+      if should_lock_price then
+        inserter_record.pending_unit_price = order.unit_price
+      end
       inserter_record.last_seen_tick = tick
     end
   end
@@ -259,23 +343,38 @@ function entities.find_pending_inserter_owner(box_record, order, tick)
 end
 
 function entities.set_inserter_budget(box_record, order)
-  local buyer_balance = ledger.get_balance(runtime_state.root().ledger, order.buyer_id)
+  local buyer_wallet_id = runtime_state.order_wallet_id(order) or order.buyer_id
+  local buyer_balance = ledger.get_balance(runtime_state.root().ledger, buyer_wallet_id)
   local nearby = entities.find_nearby_inserter_records(box_record)
-  local max_units = math.floor(buyer_balance / order.unit_price)
+  local affordable_units = math.floor(buyer_balance / order.unit_price)
 
   for _, inserter_record in ipairs(nearby) do
     local inserter = inserter_record.entity
     if inserter.valid then
-      local held_count = 0
-      if inserter.held_stack.valid_for_read and inserter.held_stack.name == order.item_name then
-        held_count = inserter.held_stack.count
-      end
-
-      if max_units <= 0 or (held_count > 0 and held_count > max_units) then
+      local held_matching_order_item =
+        inserter.held_stack.valid_for_read and
+        inserter.held_stack.name == order.item_name
+      local min_unit_price = inserter_record.min_unit_price
+      local has_locked_in_flight_price =
+        min_unit_price ~= nil and
+        held_matching_order_item and
+        inserter_record.pending_box_id == box_record.box_id and
+        inserter_record.pending_item_name == order.item_name and
+        util.is_positive_integer(inserter_record.pending_unit_price) and
+        inserter_record.pending_unit_price >= min_unit_price
+      local has_valid_floor =
+        min_unit_price ~= nil and
+        (order.unit_price >= min_unit_price or has_locked_in_flight_price)
+      if not has_valid_floor then
         inserter.disabled_by_script = true
+        inserter.inserter_stack_size_override = 0
+      elseif affordable_units <= 0 then
+        inserter.disabled_by_script = true
+        inserter.inserter_stack_size_override = 0
       else
         inserter.disabled_by_script = false
-        inserter.inserter_stack_size_override = math.max(1, max_units)
+        -- Keep automated deliveries single-unit to avoid in-flight stack overshoot.
+        inserter.inserter_stack_size_override = 1
       end
     end
   end

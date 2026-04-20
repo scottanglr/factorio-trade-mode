@@ -83,7 +83,7 @@ function economy.tick_second(second)
 
     for player_id, amount in pairs(payout_plan.payouts) do
       if amount > 0 then
-        ledger.credit(root.ledger, player_id, amount, "ubi")
+        ledger.credit(root.ledger, runtime_state.wallet_id_for_player(player_id), amount, "ubi")
         metrics.record_ubi(root.metrics, second, amount, player_id, force_name)
       end
     end

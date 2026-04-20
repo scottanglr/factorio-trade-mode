@@ -2,19 +2,19 @@
 
 # Economy And UBI
 
-The mod uses a shared gold economy. Money is not mined or crafted directly. Instead, it flows between players through trade and contracts, and new money enters the game through a UBI system driven by raw ore production.
+The mod uses force-shared wallets. In multiplayer teams, everyone on the same force spends from and earns into one shared wallet. Money is not mined or crafted directly. Instead, it flows through trade and contracts, and new money enters through a UBI system driven by recent raw ore throughput.
 
 ## Gold Flow
 
 Gold moves in three main ways:
 
-- `Trade box settlements` move gold from the buyer to the supplier.
-- `Contract payouts` move gold from the contract creator to the assignee.
-- `UBI` injects new gold into connected players' balances.
+- `Trade box settlements` move gold from the buyer force wallet to the supplier force wallet.
+- `Contract payouts` move gold from the contract creator's force wallet to the assignee's force wallet.
+- `UBI` injects new gold into force wallets using connected-player throughput scaling.
 
 ## How UBI Works
 
-UBI is based on recent raw ore throughput over a rolling 60-second window.
+UBI is based on recent raw ore throughput over a rolling 60-second window, normalized by the number of currently connected players in the force.
 
 The tracked resources are:
 
@@ -27,7 +27,8 @@ The tracked resources are:
 Important behavior:
 
 - There is always a base UBI trickle.
-- More recent raw ore production increases the payout rate.
+- More recent raw ore throughput increases the payout rate.
+- The payout curve uses ore throughput per connected player, so a larger force does not get outsized per-player UBI just from having more miners online.
 - Only currently connected players receive the split.
 - Fractional gold is banked until it becomes spendable.
 - Remainder distribution rotates so small leftovers are shared fairly over time.
@@ -49,7 +50,7 @@ The last-minute views use a rolling 60-second window.
 
 ## Reading The Balance And Leaderboards
 
-- `Top balances` shows the richest players by current gold.
+- `Top balances` shows wallet totals (one per visible force in normal team play).
 - `Top earners` shows who received the most gold recently.
 - `Top spenders` shows who spent the most on buy orders recently.
 

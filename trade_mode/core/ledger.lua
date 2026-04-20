@@ -4,6 +4,16 @@ local ledger = {}
 
 local JOURNAL_LIMIT = 256
 
+local function normalize_account_id(account_id, field_name)
+  if util.is_positive_integer(account_id) then
+    return account_id
+  end
+  if type(account_id) == "string" and account_id ~= "" then
+    return account_id
+  end
+  error((field_name or "account_id") .. " must be a positive integer or non-empty string")
+end
+
 local function ensure_state(state)
   state.balances = state.balances or {}
   state.journal = state.journal or {}
@@ -11,13 +21,13 @@ local function ensure_state(state)
   return state
 end
 
-local function ensure_account(state, player_id)
-  util.assert_positive_integer(player_id, "player_id")
+local function ensure_account(state, account_id, field_name)
+  account_id = normalize_account_id(account_id, field_name or "account_id")
   ensure_state(state)
-  if state.balances[player_id] == nil then
-    state.balances[player_id] = 0
+  if state.balances[account_id] == nil then
+    state.balances[account_id] = 0
   end
-  return state.balances[player_id]
+  return state.balances[account_id], account_id
 end
 
 local function append_entry(state, entry)
@@ -25,121 +35,122 @@ local function append_entry(state, entry)
   state.next_entry_id = state.next_entry_id + 1
 end
 
-function ledger.create_account(state, player_id)
-  ensure_account(state, player_id)
+function ledger.create_account(state, account_id)
+  local _, normalized_account_id = ensure_account(state, account_id, "account_id")
   return {
     ok = true,
-    balance = state.balances[player_id],
+    balance = state.balances[normalized_account_id],
   }
 end
 
-function ledger.get_balance(state, player_id)
-  ensure_account(state, player_id)
-  return state.balances[player_id]
+function ledger.get_balance(state, account_id)
+  local _, normalized_account_id = ensure_account(state, account_id, "account_id")
+  return state.balances[normalized_account_id]
 end
 
-function ledger.credit(state, player_id, amount, reason)
-  util.assert_positive_integer(player_id, "player_id")
+function ledger.credit(state, account_id, amount, reason)
+  local normalized_account_id = normalize_account_id(account_id, "account_id")
   util.assert_positive_integer(amount, "amount")
   util.assert_non_empty_string(reason, "reason")
 
   ensure_state(state)
-  ensure_account(state, player_id)
-  state.balances[player_id] = state.balances[player_id] + amount
+  ensure_account(state, normalized_account_id, "account_id")
+  state.balances[normalized_account_id] = state.balances[normalized_account_id] + amount
   append_entry(state, {
     id = state.next_entry_id,
     kind = "credit",
-    player_id = player_id,
+    account_id = normalized_account_id,
     amount = amount,
     reason = reason,
   })
 
   return {
     ok = true,
-    balance = state.balances[player_id],
+    balance = state.balances[normalized_account_id],
   }
 end
 
-function ledger.debit(state, player_id, amount, reason)
-  util.assert_positive_integer(player_id, "player_id")
+function ledger.debit(state, account_id, amount, reason)
+  local normalized_account_id = normalize_account_id(account_id, "account_id")
   util.assert_positive_integer(amount, "amount")
   util.assert_non_empty_string(reason, "reason")
 
   ensure_state(state)
-  ensure_account(state, player_id)
-  if state.balances[player_id] < amount then
+  ensure_account(state, normalized_account_id, "account_id")
+  if state.balances[normalized_account_id] < amount then
     return {
       ok = false,
       error = "insufficient_funds",
-      balance = state.balances[player_id],
+      balance = state.balances[normalized_account_id],
     }
   end
 
-  state.balances[player_id] = state.balances[player_id] - amount
+  state.balances[normalized_account_id] = state.balances[normalized_account_id] - amount
   append_entry(state, {
     id = state.next_entry_id,
     kind = "debit",
-    player_id = player_id,
+    account_id = normalized_account_id,
     amount = amount,
     reason = reason,
   })
 
   return {
     ok = true,
-    balance = state.balances[player_id],
+    balance = state.balances[normalized_account_id],
   }
 end
 
-function ledger.transfer(state, from_player_id, to_player_id, amount, reason)
-  util.assert_positive_integer(from_player_id, "from_player_id")
-  util.assert_positive_integer(to_player_id, "to_player_id")
+function ledger.transfer(state, from_account_id, to_account_id, amount, reason)
+  local normalized_from = normalize_account_id(from_account_id, "from_account_id")
+  local normalized_to = normalize_account_id(to_account_id, "to_account_id")
   util.assert_positive_integer(amount, "amount")
   util.assert_non_empty_string(reason, "reason")
 
   ensure_state(state)
-  ensure_account(state, from_player_id)
-  ensure_account(state, to_player_id)
+  ensure_account(state, normalized_from, "from_account_id")
+  ensure_account(state, normalized_to, "to_account_id")
 
-  if state.balances[from_player_id] < amount then
+  if state.balances[normalized_from] < amount then
     return {
       ok = false,
       error = "insufficient_funds",
-      from_balance = state.balances[from_player_id],
-      to_balance = state.balances[to_player_id],
+      from_balance = state.balances[normalized_from],
+      to_balance = state.balances[normalized_to],
     }
   end
 
-  state.balances[from_player_id] = state.balances[from_player_id] - amount
-  state.balances[to_player_id] = state.balances[to_player_id] + amount
+  state.balances[normalized_from] = state.balances[normalized_from] - amount
+  state.balances[normalized_to] = state.balances[normalized_to] + amount
   append_entry(state, {
     id = state.next_entry_id,
     kind = "transfer",
-    from_player_id = from_player_id,
-    to_player_id = to_player_id,
+    from_account_id = normalized_from,
+    to_account_id = normalized_to,
     amount = amount,
     reason = reason,
   })
 
   return {
     ok = true,
-    from_balance = state.balances[from_player_id],
-    to_balance = state.balances[to_player_id],
+    from_balance = state.balances[normalized_from],
+    to_balance = state.balances[normalized_to],
   }
 end
 
 function ledger.top_balances(state, limit)
   ensure_state(state)
   local entries = {}
-  for player_id, balance in pairs(state.balances) do
+  for account_id, balance in pairs(state.balances) do
     entries[#entries + 1] = {
-      player_id = player_id,
+      account_id = account_id,
+      player_id = account_id,
       balance = balance,
     }
   end
 
   table.sort(entries, function(left, right)
     if left.balance == right.balance then
-      return left.player_id < right.player_id
+      return tostring(left.account_id) < tostring(right.account_id)
     end
     return left.balance > right.balance
   end)
@@ -159,4 +170,3 @@ function ledger.normalize(state)
 end
 
 return ledger
-
