@@ -37,13 +37,21 @@ type CraftingTimeSummary = {
 type CliOptions = {
   input?: string;
   inputUrl: string;
-  output: string;
+  outputVanilla: string;
+  outputSpaceAge: string;
+  verbose: boolean;
+  traceCandidates: boolean;
 };
+
+type PriceMode = 'vanilla' | 'space_age';
 
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     inputUrl: DEFAULT_DATA_RAW_URL,
-    output: 'trade_mode/suggested-prices-config.lua',
+    outputVanilla: 'trade_mode/suggested-prices-vanilla.lua',
+    outputSpaceAge: 'trade_mode/suggested-prices-space-age.lua',
+    verbose: false,
+    traceCandidates: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -53,7 +61,15 @@ function parseArgs(argv: string[]): CliOptions {
     } else if (arg === '--input-url' && argv[i + 1]) {
       options.inputUrl = argv[++i];
     } else if (arg === '--output' && argv[i + 1]) {
-      options.output = argv[++i];
+      options.outputSpaceAge = argv[++i];
+    } else if (arg === '--output-space-age' && argv[i + 1]) {
+      options.outputSpaceAge = argv[++i];
+    } else if (arg === '--output-vanilla' && argv[i + 1]) {
+      options.outputVanilla = argv[++i];
+    } else if (arg === '--verbose' || arg === '-v') {
+      options.verbose = true;
+    } else if (arg === '--trace-candidates') {
+      options.traceCandidates = true;
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -69,8 +85,32 @@ function printHelp(): void {
 Options:
   --input <path>      Path to Factorio script-output/data-raw-dump.json
   --input-url <url>   URL to full data.raw dump (JSON or Lua/Serpent)
-  --output <path>     Output Lua config path (default: trade_mode/suggested-prices-config.lua)
+  --output <path>     Output Lua config path for Space Age (default: trade_mode/suggested-prices-space-age.lua)
+  --output-space-age <path>  Output Lua config path for Space Age prices
+  --output-vanilla <path>    Output Lua config path for vanilla prices
+  -v, --verbose       Print detailed progress logs
+  --trace-candidates  Include per-recipe candidate pricing logs (very verbose)
   -h, --help          Show this help message`);
+}
+
+type Logger = {
+  info: (message: string) => void;
+  candidate: (message: string) => void;
+};
+
+function createLogger(options: CliOptions): Logger {
+  return {
+    info: (message: string) => {
+      if (options.verbose || options.traceCandidates) {
+        console.log(`[pricing] ${message}`);
+      }
+    },
+    candidate: (message: string) => {
+      if (options.traceCandidates) {
+        console.log(`[pricing:candidate] ${message}`);
+      }
+    },
+  };
 }
 
 type LuaAstNode = {
@@ -490,19 +530,31 @@ function summarizeCraftingTimes(raw: DataRaw): CraftingTimeSummary {
   return summary;
 }
 
-function calculatePrices(raw: DataRaw): PriceMap {
+function isSpaceOnlyRecipeVariant(variant: Record<string, unknown>): boolean {
+  const surfaceConditions = variant.surface_conditions;
+  return Array.isArray(surfaceConditions) && surfaceConditions.length > 0;
+}
+
+function calculatePrices(raw: DataRaw, logger: Logger, mode: PriceMode): PriceMap {
   const prices: PriceMap = {};
 
-  for (const resourceName of extractMinedResources(raw)) {
+  const minedResources = extractMinedResources(raw);
+  logger.info(`[${mode}] Seeding ${minedResources.size} mined resources at base cost ${MINED_RESOURCE_BASE_COST}.`);
+  for (const resourceName of minedResources) {
     prices[resourceName] = MINED_RESOURCE_BASE_COST;
   }
   addPumpSeedCosts(raw, prices);
   const energyUnitPrice = (prices.coal ?? MINED_RESOURCE_BASE_COST) / coalEnergyUnits(raw);
+  logger.info(`[${mode}] Energy unit price derived from coal: ${energyUnitPrice.toFixed(4)}.`);
 
   const recipes = raw.recipe ?? {};
+  logger.info(`[${mode}] Loaded ${Object.keys(recipes).length} total recipes.`);
   const productsWithDirectBaseRecipe = new Set<string>();
   for (const recipe of Object.values(recipes)) {
     for (const variant of recipeVariants(recipe)) {
+      if (mode === 'vanilla' && isSpaceOnlyRecipeVariant(variant)) {
+        continue;
+      }
       if (typeof variant.name !== 'string') {
         continue;
       }
@@ -513,24 +565,39 @@ function calculatePrices(raw: DataRaw): PriceMap {
       }
     }
   }
+  logger.info(`[${mode}] Identified ${productsWithDirectBaseRecipe.size} products with direct base recipes.`);
 
   let changed = true;
   for (let pass = 0; pass < 10000 && changed; pass += 1) {
     changed = false;
+    let updatesThisPass = 0;
+    let consideredThisPass = 0;
+    let skippedHidden = 0;
+    let skippedNoIngredientsOrProducts = 0;
+    let skippedMissingInputs = 0;
+    let skippedBlockedByDirectBase = 0;
+    logger.info(`[${mode}] Starting pass ${pass + 1}.`);
 
     for (const recipe of Object.values(recipes)) {
       if (recipe.hidden === true) {
+        skippedHidden += 1;
         continue;
       }
 
       for (const variant of recipeVariants(recipe)) {
+        if (mode === 'vanilla' && isSpaceOnlyRecipeVariant(variant)) {
+          continue;
+        }
+        consideredThisPass += 1;
         const ingredients = extractIngredients(variant);
         const products = extractProducts(variant);
         if (ingredients.length === 0 || products.length === 0) {
+          skippedNoIngredientsOrProducts += 1;
           continue;
         }
 
         if (!ingredients.every(([name]) => prices[name] !== undefined)) {
+          skippedMissingInputs += 1;
           continue;
         }
 
@@ -546,19 +613,43 @@ function calculatePrices(raw: DataRaw): PriceMap {
             continue;
           }
           if (productsWithDirectBaseRecipe.has(productName) && recipeName !== productName) {
+            skippedBlockedByDirectBase += 1;
             continue;
           }
 
           const candidate = totalCostWithEnergy / productAmount;
+          logger.candidate(
+            `${recipeName || '<unnamed>'} -> ${productName} amount=${productAmount} ` +
+              `inputs=${totalInputCost.toFixed(2)} energy=${recipeEnergyCost.toFixed(2)} ` +
+              `candidate=${candidate.toFixed(4)}`,
+          );
           if (prices[productName] === undefined || candidate < prices[productName]) {
+            const previous = prices[productName];
             prices[productName] = candidate;
             changed = true;
+            updatesThisPass += 1;
+            logger.info(
+              `[${mode}] Price update for ${productName}: ${previous === undefined ? 'unset' : previous.toFixed(4)} -> ${candidate.toFixed(4)} via ${recipeName || '<unnamed>'}.`,
+            );
           }
         }
       }
     }
+
+    logger.info(
+      `[${mode}] Completed pass ${pass + 1}: considered=${consideredThisPass}, updates=${updatesThisPass}, ` +
+        `skipped(hidden=${skippedHidden}, empty=${skippedNoIngredientsOrProducts}, missing-inputs=${skippedMissingInputs}, direct-base-guard=${skippedBlockedByDirectBase}), changed=${changed}.`,
+    );
   }
 
+  if (mode === 'vanilla' && prices['space-science-pack'] === undefined && prices['rocket-part'] !== undefined) {
+    prices['space-science-pack'] = prices['rocket-part'] / 10;
+    logger.info(
+      `[${mode}] Added fallback vanilla space-science-pack price from rocket-part/10 = ${prices['space-science-pack'].toFixed(4)}.`,
+    );
+  }
+
+  logger.info(`[${mode}] Finished pricing with ${Object.keys(prices).length} priced entries.`);
   return prices;
 }
 
@@ -591,9 +682,9 @@ function validateFullDump(raw: DataRaw): void {
   }
 }
 
-function writeLuaConfig(prices: PriceMap, outputPath: string): void {
+function writeLuaConfig(prices: PriceMap, outputPath: string, label: string): void {
   const lines: string[] = [
-    '-- suggested-prices-config.lua',
+    `-- ${label}`,
     '-- Auto-generated by scripts/generate-suggested-prices.ts',
     `-- mined resource base cost = ${MINED_RESOURCE_BASE_COST}`,
     `-- production factor = ${PRODUCTION_FACTOR}`,
@@ -644,8 +735,19 @@ async function loadDataRaw(options: CliOptions): Promise<DataRaw> {
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  const logger = createLogger(options);
+  logger.info(
+    `Starting suggested price generation. outputs: vanilla=${options.outputVanilla}, space_age=${options.outputSpaceAge}`,
+  );
+  logger.info(
+    options.input
+      ? `Loading data.raw payload from file: ${options.input}`
+      : `Loading data.raw payload from URL: ${options.inputUrl}`,
+  );
   const raw = await loadDataRaw(options);
+  logger.info('Parsed data.raw payload successfully.');
   validateFullDump(raw);
+  logger.info('Validated full dump input.');
   const craftingTimeSummary = summarizeCraftingTimes(raw);
   console.log(
     `[craft-time] implicit-default=${craftingTimeSummary.implicitDefaultCount} ` +
@@ -659,15 +761,21 @@ async function main(): Promise<void> {
         .join(', ')}`,
     );
   }
-  const prices = calculatePrices(raw);
-  const missingRequiredItems = REQUIRED_ITEMS.filter((name) => prices[name] === undefined);
+  const vanillaPrices = calculatePrices(raw, logger, 'vanilla');
+  const spaceAgePrices = calculatePrices(raw, logger, 'space_age');
+  const missingRequiredItems = REQUIRED_ITEMS.filter(
+    (name) => vanillaPrices[name] === undefined || spaceAgePrices[name] === undefined,
+  );
   if (missingRequiredItems.length > 0) {
     throw new Error(
       `Generated data is missing required items: ${missingRequiredItems.join(', ')}. ` +
         'Input source is likely incomplete.',
     );
   }
-  writeLuaConfig(prices, options.output);
+  writeLuaConfig(vanillaPrices, options.outputVanilla, 'suggested-prices-vanilla.lua');
+  writeLuaConfig(spaceAgePrices, options.outputSpaceAge, 'suggested-prices-space-age.lua');
+  logger.info(`Wrote vanilla suggested prices to ${options.outputVanilla}.`);
+  logger.info(`Wrote space age suggested prices to ${options.outputSpaceAge}.`);
 }
 
 main().catch((error: unknown) => {

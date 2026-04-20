@@ -27,19 +27,19 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Regenerate suggested prices config
-        run: npx tsx scripts/generate-suggested-prices.ts --input-url "$DATA_RAW_URL" --output trade_mode/suggested-prices-config.lua
+      - name: Regenerate suggested prices configs
+        run: npx tsx scripts/generate-suggested-prices.ts --input-url "$DATA_RAW_URL"
 
       - name: Commit updated config
         shell: bash
         run: |
-          if git diff --quiet -- trade_mode/suggested-prices-config.lua; then
+          if git diff --quiet -- trade_mode/suggested-prices-config.lua trade_mode/suggested-prices-vanilla.lua trade_mode/suggested-prices-space-age.lua; then
             echo "No changes to commit"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trade_mode/suggested-prices-config.lua
-          git commit -m "chore: regenerate suggested prices config"
+          git add trade_mode/suggested-prices-config.lua trade_mode/suggested-prices-vanilla.lua trade_mode/suggested-prices-space-age.lua
+          git commit -m "chore: regenerate suggested prices configs"
           git push
