@@ -38,6 +38,12 @@ This is meant for Windows players who prefer an unpacked mod folder instead of r
 
 Release zips include only the distributable mod files (`info.json`, `control.lua`, `data.lua`, `settings.lua`, `changelog.txt`, `locale/`, `prototypes/`, `trade_mode/`, and updater scripts). Dev/test files are excluded.
 
+### Dependency notes for players
+
+- You do **not** need to install any extra libraries manually.
+- Runtime helper modules (including the stats helper used by economy graphs) are bundled inside `trade_mode/` and ship in the release zip.
+- Installing/updating this mod is still just “drop in one zip/folder and enable it”.
+
 ## For Players
 
 ### What this mod adds

@@ -6,6 +6,7 @@ local entities = require("trade_mode.runtime.entities")
 local format = require("trade_mode.runtime.format")
 local inserter_stats = require("trade_mode.core.inserter_stats")
 local metrics = require("trade_mode.core.metrics")
+local graph_series = require("trade_mode.graph.series")
 local notifications = require("trade_mode.runtime.notifications")
 local orders = require("trade_mode.core.orders")
 local pricing = require("trade_mode.core.pricing")
@@ -398,6 +399,53 @@ local function add_two_column_header(table_element, left, right)
   table_element.add({type = "label", style = "bold_label", caption = right})
 end
 
+local function add_series_graph(parent, title, series)
+  local frame = parent.add({type = "frame", style = "inside_shallow_frame_with_padding", direction = "vertical"})
+  frame.style.horizontally_stretchable = true
+
+  local summary = graph_series.summary(series)
+  frame.add({
+    type = "label",
+    style = "caption_label",
+    caption = {
+      "",
+      title,
+      "  •  ",
+      localised("latest-avg-peak", format.localised_money(summary.latest), format.localised_money(summary.average), format.localised_money(summary.peak)),
+    },
+  })
+  frame.add({
+    type = "label",
+    style = "caption_label",
+    caption = localised("median-and-volatility", format.localised_money(summary.median), format.localised_money(summary.stddev)),
+  })
+
+  local bucket_row = frame.add({type = "flow", direction = "horizontal"})
+  bucket_row.style.horizontally_stretchable = true
+  bucket_row.style.horizontal_spacing = 2
+
+  if #series == 0 then
+    frame.add({type = "label", style = "caption_label", caption = localised("graph-empty")})
+    return
+  end
+
+  for bucket_index, value in ipairs(series) do
+    local bar = bucket_row.add({
+      type = "progressbar",
+      value = summary.peak > 0 and (value / summary.peak) or 0,
+    })
+    bar.style.horizontally_stretchable = true
+    bar.style.minimal_width = 8
+    bar.tooltip = localised("graph-bucket-tooltip", tostring(bucket_index), format.localised_money(value))
+  end
+
+  frame.add({
+    type = "label",
+    style = "caption_label",
+    caption = localised("graph-window-note"),
+  })
+end
+
 local function sync_contract_form(player)
   local ui = ui_state(player.index)
   set_text_if_changed(main_element(player, constants.gui.contract_title), ui.contract_title or "")
@@ -706,6 +754,17 @@ local function refresh_economy_tab(player)
   add_metric_card(cards, localised("ore-throughput"), localised("units-per-minute-compact", string.format("%.1f", snapshot.recent_raw_ore_per_minute)), localised("tracked-raw-ore-force"))
   add_metric_card(cards, localised("last-minute-ubi"), format.localised_money(metrics.ubi_last_minute(state.metrics, second, force_name)), localised("rolling-window"))
   add_metric_card(cards, localised("last-minute-trade"), format.localised_money(metrics.trade_last_minute(state.metrics, second, force_name)), localised("rolling-window"))
+
+  local graph_row = container.add({type = "flow", direction = "horizontal"})
+  graph_row.style.horizontally_stretchable = true
+  graph_row.style.horizontal_spacing = 12
+
+  local trade_income_series = graph_series.trade(state.metrics, second, 60, 12, force_name)
+  local ubi_income_series = graph_series.ubi(state.metrics, second, 60, 12, force_name)
+  local total_income_series = graph_series.combine(trade_income_series, ubi_income_series)
+  add_series_graph(graph_row, localised("income-graph-trade"), trade_income_series)
+  add_series_graph(graph_row, localised("income-graph-ubi"), ubi_income_series)
+  add_series_graph(graph_row, localised("income-graph-total"), total_income_series)
 
   local upper_row = container.add({type = "flow", direction = "horizontal"})
   upper_row.style.horizontally_stretchable = true

@@ -6,6 +6,8 @@ local metrics = require("trade_mode.core.metrics")
 local orders = require("trade_mode.core.orders")
 local pricing = require("trade_mode.core.pricing")
 local suggested_prices = require("trade_mode.suggested-prices-config")
+local graph_series = require("trade_mode.graph.series")
+local stats = require("trade_mode.graph.stats")
 local ubi = require("trade_mode.core.ubi")
 
 local suite = {}
@@ -444,6 +446,59 @@ function suite.run()
         metrics.set_snapshot_counts(state, 3, 2)
         lib.assert_equal(state.snapshots.active_orders, 3)
         lib.assert_equal(state.snapshots.active_contracts, 2)
+      end,
+    },
+    {
+      name = "trade and ubi series return bucketed history",
+      run = function()
+        local state = {}
+        metrics.record_trade(state, 50, 4, 1, 2, "north")
+        metrics.record_trade(state, 56, 7, 1, 2, "north")
+        metrics.record_ubi(state, 55, 3, 2, "north")
+        local traded = graph_series.trade(state, 60, 12, 6, "north")
+        local ubi_series = graph_series.ubi(state, 60, 12, 6, "north")
+        lib.assert_equal(table.concat(traded, ","), "4,0,0,7,0,0")
+        lib.assert_equal(table.concat(ubi_series, ","), "0,0,0,3,0,0")
+      end,
+    },
+    {
+      name = "series honors force filtering",
+      run = function()
+        local state = {}
+        metrics.record_trade(state, 60, 5, 1, 2, "north")
+        metrics.record_trade(state, 60, 9, 1, 2, "south")
+        local north = graph_series.trade(state, 60, 10, 5, "north")
+        local all_forces = graph_series.trade(state, 60, 10, 5)
+        lib.assert_equal(north[5], 5)
+        lib.assert_equal(all_forces[5], 14)
+      end,
+    },
+    {
+      name = "series combine and summary expose latest average and peak",
+      run = function()
+        local combined = graph_series.combine({1, 2, 3}, {4, 0, 2, 5})
+        lib.assert_equal(table.concat(combined, ","), "5,2,5,5")
+        local summary = graph_series.summary(combined)
+        lib.assert_equal(summary.total, 17)
+        lib.assert_equal(summary.average, 4.25)
+        lib.assert_equal(summary.peak, 5)
+        lib.assert_equal(summary.minimum, 2)
+        lib.assert_equal(summary.median, 5)
+        lib.assert_true(summary.stddev > 0)
+        lib.assert_equal(summary.latest, 5)
+      end,
+    },
+    {
+      name = "stats helpers provide sum max and mean",
+      run = function()
+        local values = {2, 6, 4}
+        lib.assert_equal(stats.sum(values), 12)
+        local max_value, min_value = stats.maxmin(values)
+        lib.assert_equal(max_value, 6)
+        lib.assert_equal(min_value, 2)
+        lib.assert_equal(stats.mean(values), 4)
+        lib.assert_equal(stats.median(values), 4)
+        lib.assert_true(stats.stddev(values) > 0)
       end,
     },
     {
